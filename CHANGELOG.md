@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.3] - 2026-05-11
+
+### added
+- LLM 自主偷取功能：新增 `steal_sticker` LLM tool，bot 可在私聊/群聊中自主偷取图片入库
+- 偷取统一走 VLM 自动分析路线，入库后回传分类/标签/描述/场景结果给 LLM
+- 新增 `steal_by_llm` 配置项，控制 LLM 自主偷取开关
+- `on_llm_request` 注入偷取指引，包含分类库存提示和使用时机
+
+### fix
+- 补回 `resolve_auto_emoji_turn_permission` 丢失的 debug 日志（重构遗漏）
+- 修复 `steal_image_direct` 空索引覆盖全库的 bug
+
 ## [2.6.2] - 2026-05-11
 
 ### fix

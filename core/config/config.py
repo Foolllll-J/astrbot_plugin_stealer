@@ -52,6 +52,7 @@ class PluginConfig(BaseModel):
     enable_natural_emotion_analysis: bool = True  # 情绪识别模式
     emotion_analysis_provider_id: str = ""  # 情绪分析专用模型
     smart_emoji_selection: bool = True  # 智能表情包选择
+    steal_by_llm: bool = False  # LLM 自主偷取
 
     # === 自定义提示词 ===
     custom_emoji_classification_prompt: str = ""

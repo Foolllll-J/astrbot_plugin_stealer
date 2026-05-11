@@ -192,6 +192,13 @@ class EmojiSenderEngine:
             return decide(True, "chance_hit")
         return decide(False, "chance_miss")
 
+    async def _resolve_with_log(self, event: AstrMessageEvent) -> bool:
+        """带日志的权限判断包装，方便排查发送概率问题。"""
+        allowed = await self.resolve_auto_emoji_turn_permission(event)
+        reason = event.get_extra("stealer_auto_emoji_turn_reason") or "unknown"
+        logger.debug(f"[Stealer] 当前轮次自动发表情判定: allowed={allowed}, reason={reason}")
+        return allowed
+
     def claim_auto_emoji_turn(self, event: AstrMessageEvent) -> bool:
         """尝试占用当前回合的表情包发送权。"""
         turn_state = self.emoji_turn_state(event)

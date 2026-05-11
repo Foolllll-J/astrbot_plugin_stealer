@@ -48,6 +48,12 @@
     "default": false,
     "hint": "开启后会使用 VLM 审核图片内容，可能增加处理时间"
   },
+  "steal_by_llm": {
+    "description": "LLM 自主偷取",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后 LLM 可在对话中主动偷取图片入库。\n需要 steal_emoji 同时开启。\nLLM 可自己打标或交给 VLM 分析。\n用户说'偷一下这个'时 LLM 会响应。"
+  },
   "_send_section": {
     "description": "=== 发送设置 ===",
     "type": "text",

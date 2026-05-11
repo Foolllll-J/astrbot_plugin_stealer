@@ -644,6 +644,91 @@ class ImageProcessorService:
         logger.warning(f"分类无效（{source}）: {category!r}，图片留在raw目录等待清理")
         return False, None
 
+    async def steal_image_direct(
+        self,
+        file_path: str,
+        category: str,
+        tags: list[str] | None = None,
+        desc: str = "",
+        scenes: list[str] | None = None,
+        is_temp: bool = False,
+        extra_meta: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
+        """LLM 自行打标后直接入库，跳过 VLM 分类。
+
+        仍然执行哈希计算、去重检查、文件存储和索引更新。
+        从数据库加载完整索引，合并后写回，不会覆盖已有数据。
+
+        Returns:
+            (成功与否, 结果消息)
+        """
+        base_path = Path(file_path)
+        if not base_path.exists():
+            return False, f"图片文件不存在: {file_path}"
+
+        if not category or category not in self.categories:
+            return False, f"分类 '{category}' 不在可用分类列表中"
+
+        normalized_tags = [str(t).strip() for t in (tags or []) if t and str(t).strip()]
+        normalized_desc = str(desc or "").strip()
+        normalized_scenes = [str(s).strip() for s in (scenes or []) if s and str(s).strip()]
+
+        # 兜底描述：用分类信息中的中文名，而不是干巴巴的"LLM手动入库"
+        if not normalized_desc:
+            cat_info = self.plugin_config.category_info or {}
+            cat_meta = cat_info.get(category, {}) if isinstance(cat_info, dict) else {}
+            cn_name = str(cat_meta.get("name", "") or "").strip()
+            cat_display = cn_name or category
+            normalized_desc = f"来自群聊的{cat_display}表情包"
+
+        # 1. 加载完整索引（避免覆盖已有数据）
+        full_idx = await self.plugin._load_index()
+
+        # 2. 计算哈希
+        hash_val = await self._compute_hash(file_path)
+        if not hash_val:
+            return False, "无法计算图片哈希"
+
+        # 3. 去重检查（使用完整索引）
+        async with self._process_lock:
+            if hash_val in self._processing_hashes:
+                return False, "图片正在处理中，跳过"
+            if await self._is_duplicate_or_blacklisted(hash_val, full_idx, file_path, is_temp):
+                return False, "图片已存在或相似度过高"
+            self._processing_hashes.add(hash_val)
+
+        try:
+            # 4. 移到 raw 目录
+            raw_path = await self._move_to_raw(file_path, hash_val, is_temp)
+
+            # 5. 直接存储到分类目录并更新完整索引
+            success, merged_idx = await self._store_and_index_image(
+                file_path=raw_path,
+                is_temp=False,
+                category=category,
+                hash_val=hash_val,
+                idx=full_idx,
+                extra_meta=extra_meta,
+                tags=normalized_tags,
+                desc=normalized_desc,
+                scenes=normalized_scenes,
+                already_in_raw=True,
+            )
+
+            if success and merged_idx is not None:
+                await self.plugin._save_index(merged_idx)
+                tag_hint = f"，标签: {', '.join(normalized_tags)}" if normalized_tags else ""
+                scene_hint = f"，场景: {', '.join(normalized_scenes)}" if normalized_scenes else ""
+                return True, f"偷取成功！已入库到分类 '{category}'{tag_hint}{scene_hint}"
+
+            return False, "存储图片失败"
+
+        except Exception as e:
+            logger.error(f"LLM 直接入库失败 [{file_path}]: {e}")
+            return False, f"入库失败: {e}"
+        finally:
+            self._processing_hashes.discard(hash_val)
+
     async def classify_image(
         self,
         event: AstrMessageEvent | None,

@@ -182,7 +182,7 @@ class PlatformDetector:
 
                 if matched_data is not None:
                     logger.debug(f"[EmojiCheck] matched_data keys: {list(matched_data.keys())}")
-                    sub_type = matched_data.get("sub_type")
+                    sub_type = matched_data.get("sub_type") or matched_data.get("subType")
                     if is_sub_type_emoji(sub_type):
                         logger.debug(f"检测到表情包标记: sub_type={sub_type} (从原始事件)")
                         return True

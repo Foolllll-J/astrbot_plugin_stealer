@@ -63,13 +63,14 @@ const TEMPLATE = /* html */ `
                 </div>
             </div>
 
-            <div class="health-indicator" :class="healthStatus">
-              <span class="health-dot"></span>
-              <span class="health-text">{{ {ok:'正常',slow:'缓慢',error:'异常',unknown:'检测中'}[healthStatus] }}</span>
-            </div>
+            <div class="header-right">
+              <div class="health-indicator" :class="healthStatus">
+                <span class="health-dot"></span>
+                <span class="health-text">{{ {ok:'正常',slow:'缓慢',error:'异常',unknown:'检测中'}[healthStatus] }}</span>
+              </div>
 
-            <button
-                @click="toggleTheme"
+              <button
+                  @click="toggleTheme"
                 class="theme-toggle"
                 :title="isDarkTheme ? '切换到白天模式' : '切换到黑夜模式'"
                 :class="{ 'is-dark': isDarkTheme }"
@@ -98,6 +99,7 @@ const TEMPLATE = /* html */ `
                 </div>
                 <div class="theme-glow"></div>
             </button>
+            </div>
         </header>
 
         <div class="main-container">
@@ -233,8 +235,8 @@ const TEMPLATE = /* html */ `
                         </button>
 
                         <div class="item-image">
-                            <div v-if="!imageDataUrls[img.hash]" class="image-placeholder" :style="{ backgroundColor: hashToColor(img.hash) }"></div>
-                            <img v-else :src="imageDataUrls[img.hash]" loading="lazy" :alt="img.desc" :data-hash="img.hash" class="fade-in">
+                            <div v-show="!imageDataUrls[img.hash]" class="image-placeholder" :style="{ backgroundColor: hashToColor(img.hash) }"></div>
+                            <img v-show="imageDataUrls[img.hash]" :src="imageDataUrls[img.hash]" loading="lazy" :alt="img.desc" :data-hash="img.hash" class="fade-in">
                         </div>
 
                         <div class="item-info">

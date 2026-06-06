@@ -2,6 +2,7 @@
     --bg-base: #0a0d14;
     --bg-elevated: #111520;
     --bg-card: #161b2a;
+    --bg-card-hover: #1e2335;
     --gold-primary: #d4a853;
     --gold-bright: #f0d78c;
     --gold-dim: #8b7340;
@@ -708,10 +709,10 @@ h2 {
     padding: 24px;
     z-index: 1000;
     overflow-y: auto;
-    animation: fadeIn 0.3s ease-out;
+    animation: fadeInOverlay 0.3s ease-out;
 }
 
-@keyframes fadeIn {
+@keyframes fadeInOverlay {
     from { opacity: 0; }
     to { opacity: 1; }
 }
@@ -2768,6 +2769,27 @@ input, select, textarea {
     border-radius: 4px;
     background: var(--bg-elevated);
 }
+
+/* Skeleton grid responsive */
+@media (max-width: 1200px) {
+    .skeleton-grid {
+        grid-template-columns: repeat(auto-fill, minmax(var(--slot-size-tablet), 1fr));
+    }
+}
+@media (max-width: 768px) {
+    .skeleton-grid {
+        grid-template-columns: repeat(auto-fill, minmax(var(--slot-size-mobile), 1fr));
+        gap: 8px;
+        padding: 12px;
+    }
+}
+@media (max-width: 380px) {
+    .skeleton-grid {
+        grid-template-columns: repeat(auto-fill, minmax(var(--slot-size-small), 1fr));
+        gap: 6px;
+    }
+}
+
 @keyframes shimmer {
     0% { background-position: -200% 0; }
     100% { background-position: 200% 0; }

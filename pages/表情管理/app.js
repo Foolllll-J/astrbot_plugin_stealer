@@ -893,10 +893,32 @@ createApp({
 
         const updatePageSize = () => {
           const w = window.innerWidth;
-          if (w < 380) pageSize.value = 12;
-          else if (w < 768) pageSize.value = 16;
-          else if (w < 1200) pageSize.value = 20;
-          else pageSize.value = 24;
+          const h = window.innerHeight;
+          const gap = 12;
+
+          let slotSize, sidebarWidth, mainPadding;
+          if (w < 768) {
+            slotSize = 120;
+            sidebarWidth = 0;
+            mainPadding = 24;
+          } else {
+            slotSize = 160;
+            sidebarWidth = 180;
+            mainPadding = 44;
+          }
+
+          // 计算每行能放多少张
+          const availableWidth = w - sidebarWidth - mainPadding;
+          const perRow = Math.max(2, Math.floor((availableWidth + gap) / (slotSize + gap)));
+
+          // 计算能放多少行（减去头部、工具栏、分页的高度）
+          const headerHeight = 56;
+          const toolbarHeight = 64;
+          const paginationHeight = 60;
+          const availableHeight = h - headerHeight - toolbarHeight - paginationHeight - 40;
+          const rows = Math.max(2, Math.floor((availableHeight + gap) / (slotSize + gap)));
+
+          pageSize.value = perRow * rows;
         };
 
         const thumbnailCache = createLRUCache(50);

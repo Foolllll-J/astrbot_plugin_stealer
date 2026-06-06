@@ -1857,6 +1857,14 @@ select.codex-input {
         font-size: 1.2rem;
     }
     
+    .sidebar {
+        display: none;
+    }
+
+    .main-container {
+        padding-left: 12px;
+    }
+
     .inventory-toolbar {
         flex-direction: column;
         align-items: stretch;

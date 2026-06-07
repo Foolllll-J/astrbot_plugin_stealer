@@ -179,8 +179,71 @@ class EventHandler:
             return []
 
         image_items.sort(key=lambda x: x[1])
-        remove_count = min(len(image_items) - max_reg, len(image_items))
+        overflow = len(image_index) - max_reg
+        remove_count = min(max(0, overflow), len(image_items))
+        if overflow > len(image_items):
+            logger.warning(
+                f"[capacity] Need to remove {overflow} entries, but only "
+                f"{len(image_items)} non-favorite entries are eligible"
+            )
         return image_items[:remove_count]
+
+    def _resolve_index_file_path(self, path_str: str, image_info: dict | None) -> str | None:
+        candidates: list[Path] = []
+        if path_str:
+            candidates.append(Path(path_str))
+
+        category = ""
+        if isinstance(image_info, dict):
+            category = str(image_info.get("category", "") or "").strip()
+
+        categories_dir = getattr(self.plugin, "categories_dir", None)
+        if category and categories_dir:
+            candidates.append(Path(categories_dir) / category / Path(path_str).name)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                if candidate.is_file():
+                    return str(candidate)
+            except OSError:
+                continue
+        return None
+
+    def _normalize_capacity_index_paths(self, image_index: dict) -> tuple[int, int]:
+        rekeyed = 0
+        stale_removed = 0
+
+        for path_str, image_info in list(image_index.items()):
+            if not isinstance(path_str, str):
+                image_index.pop(path_str, None)
+                stale_removed += 1
+                continue
+
+            resolved = self._resolve_index_file_path(
+                path_str, image_info if isinstance(image_info, dict) else None
+            )
+            if resolved is None:
+                image_index.pop(path_str, None)
+                stale_removed += 1
+                continue
+
+            if resolved != path_str:
+                image_index.pop(path_str, None)
+                existing = image_index.get(resolved)
+                if not isinstance(existing, dict) or (
+                    isinstance(image_info, dict)
+                    and int(image_info.get("created_at", 0) or 0)
+                    < int(existing.get("created_at", 0) or 0)
+                ):
+                    image_index[resolved] = image_info
+                rekeyed += 1
+
+        return rekeyed, stale_removed
 
     async def _enforce_capacity(self, image_index: dict) -> list[str]:
         """容量控制，删除超出限制的最旧表情包（文件+索引一起清理）。
@@ -194,6 +257,13 @@ class EventHandler:
         files_actually_deleted: list[str] = []
 
         try:
+            rekeyed, stale_removed = self._normalize_capacity_index_paths(image_index)
+            if rekeyed or stale_removed:
+                logger.info(
+                    f"[capacity] Normalized {rekeyed} index paths and removed "
+                    f"{stale_removed} stale records before enforcing capacity"
+                )
+
             items_to_remove = self._select_items_for_removal(image_index)
             if not items_to_remove:
                 return files_actually_deleted
@@ -237,8 +307,12 @@ class EventHandler:
                             except Exception as e:
                                 logger.warning(f"[容量控制] 删除文件异常 {file_path}: {e}")
                     else:
-                        # 文件已不存在，视为已清理
-                        file_gone = True
+                        # Alternate candidates may be absent; only remove the index
+                        # after the primary indexed file is confirmed gone.
+                        logger.debug(f"[capacity] Candidate file is already missing: {file_path}")
+
+                if not Path(remove_path).exists():
+                    file_gone = True
 
                 # 只有文件确实被清理后才从索引中删除，避免产生新的"僵尸文件"
                 if file_gone:

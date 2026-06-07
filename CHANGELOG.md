@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.8] - 2026-06-07
+
+### fix
+- 修复数据库并发锁超时：新增 `PRAGMA busy_timeout=30000` 防止写操作被饿死
+- 修复删除/拉黑时索引清理逻辑：支持按哈希匹配，避免路径不一致导致索引残留
+- 修复容量控制 overflow 计算错误：`remove_count` 逻辑改为 `max(0, overflow)` 防止负数
+- 修复容量控制删除确认：新增路径规范化，先尝试映射 raw 路径到分类目录，文件确认删除后才删索引
+- 修复 WebUI 删除/移动操作原子性：新增事务回滚机制，文件移动失败时自动恢复
+
+### improved
+- 数据库新增 `get_emoji_by_hash`、`delete_paths`、`update_path`、`move_path` 方法，支持事务和回滚
+- PluginAPI 重构：优先使用数据库操作，新增 `_build_full_index_snapshot` 统一索引快照
+- WebUI 批量操作原子性增强：批量删除只移除实际删除成功的路径
+- WebUI 移动端响应式优化：新增 768px/420px 断点适配
+
 ## [2.6.7] - 2026-06-07
 
 ### added

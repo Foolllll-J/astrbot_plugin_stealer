@@ -2250,3 +2250,207 @@ input, select, textarea {
         width: 100%;
     }
 }
+/* Targeted mobile polish for the emoji manager shell. */
+.codex-btn,
+.category-item,
+.pagination-btn,
+.toolbar-icon-btn,
+.modal-close,
+.modal-footer button {
+    touch-action: manipulation;
+}
+
+.search-input,
+.filter-select,
+.category-name-input,
+.category-desc-input,
+.modal-input,
+.modal-textarea,
+.modal-select {
+    max-width: 100%;
+}
+
+.toolbar-actions,
+.batch-actions,
+.modal-footer {
+    min-width: 0;
+}
+
+.inventory-toolbar,
+.batch-bar {
+    row-gap: 10px;
+}
+
+.item-info,
+.category-name,
+.category-desc,
+.modal-title {
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+    .toolbar-actions,
+    .batch-actions {
+        flex-wrap: wrap;
+    }
+
+    .toolbar-actions .codex-btn,
+    .batch-actions .codex-btn {
+        flex: 1 1 auto;
+        min-width: 118px;
+    }
+
+    .inventory-panel {
+        min-width: 0;
+    }
+}
+
+@media (max-width: 768px) {
+    .codex-header {
+        position: sticky;
+        top: 0;
+        z-index: 30;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px 10px;
+        align-items: center;
+        padding: 8px 12px;
+    }
+
+    .header-title {
+        min-width: 0;
+        gap: 10px;
+    }
+
+    .header-text h1 {
+        font-size: 1rem;
+        line-height: 1.15;
+    }
+
+    .header-text p {
+        display: none;
+    }
+
+    .header-icon {
+        width: 34px;
+        height: 34px;
+        flex: 0 0 34px;
+    }
+
+    .header-right {
+        grid-column: 2;
+        grid-row: 1;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+
+    .health-indicator {
+        min-height: 32px;
+        padding: 5px 8px;
+        white-space: nowrap;
+    }
+
+    .theme-toggle {
+        width: 36px;
+        height: 36px;
+        margin-left: 0;
+    }
+
+    .stats-bar {
+        grid-column: 1 / -1;
+        width: 100%;
+        padding: 3px;
+    }
+
+    .stat-item {
+        padding: 5px 6px;
+    }
+
+    .stat-value {
+        font-size: 1rem;
+        line-height: 1.1;
+    }
+
+    .stat-label {
+        font-size: 0.68rem;
+    }
+
+    .main-container {
+        min-height: auto;
+    }
+
+    .sidebar {
+        max-height: none;
+    }
+
+    .inventory-toolbar {
+        align-items: stretch;
+    }
+
+    .search-section,
+    .filter-section,
+    .toolbar-actions {
+        width: 100%;
+    }
+
+    .search-input,
+    .filter-select {
+        min-height: 42px;
+    }
+
+    .inventory-grid {
+        grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+        gap: 10px;
+        padding: 10px;
+    }
+
+    .item-slot {
+        min-width: 0;
+    }
+
+    .item-info {
+        padding: 8px;
+    }
+
+    .modal-overlay {
+        align-items: stretch;
+        padding: 8px;
+    }
+
+    .modal-panel {
+        width: 100%;
+        max-width: none;
+        max-height: calc(100vh - 16px);
+        border-radius: 8px;
+    }
+
+    .modal-body {
+        max-height: calc(100vh - 160px);
+        overflow: auto;
+    }
+
+    .modal-footer {
+        flex-wrap: wrap;
+    }
+
+    .modal-footer .codex-btn,
+    .modal-footer button {
+        flex: 1 1 130px;
+        min-height: 42px;
+    }
+}
+
+@media (max-width: 420px) {
+    .inventory-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .toolbar-actions .codex-btn,
+    .batch-actions .codex-btn {
+        flex-basis: 100%;
+    }
+
+    .codex-title {
+        font-size: 18px;
+    }
+}

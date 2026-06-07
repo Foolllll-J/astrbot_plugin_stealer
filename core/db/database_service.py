@@ -67,6 +67,7 @@ class DatabaseService:
             isolation_level=None,  # 自动提交模式，配合 WAL
         )
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
         conn.execute("PRAGMA foreign_keys=ON")  # 启用外键约束，支持 CASCADE
@@ -168,6 +169,12 @@ class DatabaseService:
         text = str(values).strip()
         return [text] if text else []
 
+    @staticmethod
+    def _coerce_int_flag(value: Any) -> int:
+        if isinstance(value, str):
+            return 1 if value.strip().lower() in {"1", "true", "yes", "on"} else 0
+        return 1 if bool(value) else 0
+
     def _chunk_paths(self, paths: list[str]):
         chunk_size = max(1, int(self._RELATED_FETCH_CHUNK_SIZE))
         for start in range(0, len(paths), chunk_size):
@@ -242,6 +249,32 @@ class DatabaseService:
 
             return result
 
+    def get_emoji_by_hash(self, hash_val: str) -> tuple[str, dict[str, Any]] | None:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM emoji
+                WHERE hash = ?
+                ORDER BY created_at ASC, path ASC
+                LIMIT 1
+                """,
+                (hash_val,),
+            ).fetchone()
+            if not row:
+                return None
+
+            path = row["path"]
+            result = dict(row)
+            tags = conn.execute(
+                "SELECT tag FROM emoji_tag WHERE path = ? ORDER BY rowid", (path,)
+            ).fetchall()
+            result["tags"] = [r["tag"] for r in tags]
+            scenes = conn.execute(
+                "SELECT scene FROM emoji_scene WHERE path = ? ORDER BY rowid", (path,)
+            ).fetchall()
+            result["scenes"] = [r["scene"] for r in scenes]
+            return path, result
+
     def get_all_paths(self) -> list[str]:
         """获取所有表情包路径。"""
         with self._get_connection() as conn:
@@ -284,6 +317,205 @@ class DatabaseService:
                 "UPDATE emoji SET use_count = use_count + 1, last_used_at = ? WHERE path = ?",
                 (now, path),
             )
+
+    async def delete_paths(self, paths: list[str]) -> int:
+        clean_paths = [p for p in paths if isinstance(p, str) and p]
+        if not clean_paths:
+            return 0
+        async with self._write_lock:
+            return await asyncio.to_thread(self._delete_paths_sync, clean_paths)
+
+    def _delete_paths_sync(self, paths: list[str]) -> int:
+        deleted = 0
+        with self._get_connection() as conn:
+            transaction_started = False
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                transaction_started = True
+                for path in paths:
+                    cur = conn.execute("DELETE FROM emoji WHERE path = ?", (path,))
+                    deleted += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                conn.execute("COMMIT")
+            except Exception:
+                if transaction_started and conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+        return deleted
+
+    async def update_path(self, path: str, updates: dict[str, Any]) -> bool:
+        if not path or not updates:
+            return False
+        async with self._write_lock:
+            return await asyncio.to_thread(self._update_path_sync, path, updates)
+
+    def _update_path_sync(self, path: str, updates: dict[str, Any]) -> bool:
+        scalar_fields = {
+            "hash",
+            "phash",
+            "category",
+            "desc",
+            "source",
+            "origin_target",
+            "scope_mode",
+            "created_at",
+            "use_count",
+            "last_used_at",
+            "is_favorite",
+        }
+        scalar_updates = {
+            key: self._coerce_int_flag(value) if key == "is_favorite" else value
+            for key, value in updates.items()
+            if key in scalar_fields
+        }
+
+        with self._get_connection() as conn:
+            transaction_started = False
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                transaction_started = True
+                row = conn.execute("SELECT 1 FROM emoji WHERE path = ?", (path,)).fetchone()
+                if not row:
+                    conn.execute("ROLLBACK")
+                    return False
+
+                if scalar_updates:
+                    clauses = ", ".join(f"{field} = ?" for field in scalar_updates)
+                    values = list(scalar_updates.values()) + [path]
+                    conn.execute(f"UPDATE emoji SET {clauses} WHERE path = ?", values)
+
+                if "tags" in updates:
+                    tags = self._normalize_multi_value(updates.get("tags"))
+                    conn.execute("DELETE FROM emoji_tag WHERE path = ?", (path,))
+                    for tag in tags:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO emoji_tag (path, tag) VALUES (?, ?)",
+                            (path, tag),
+                        )
+
+                if "scenes" in updates:
+                    scenes = self._normalize_multi_value(updates.get("scenes"))
+                    conn.execute("DELETE FROM emoji_scene WHERE path = ?", (path,))
+                    for scene in scenes:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO emoji_scene (path, scene) VALUES (?, ?)",
+                            (path, scene),
+                        )
+
+                conn.execute("COMMIT")
+                return True
+            except Exception:
+                if transaction_started and conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+
+    async def move_path(
+        self,
+        old_path: str,
+        new_path: str,
+        category: str,
+        updates: dict[str, Any] | None = None,
+    ) -> bool:
+        if not old_path or not new_path or old_path == new_path:
+            return False
+        async with self._write_lock:
+            return await asyncio.to_thread(
+                self._move_path_sync, old_path, new_path, category, updates or {}
+            )
+
+    def _move_path_sync(
+        self, old_path: str, new_path: str, category: str, updates: dict[str, Any]
+    ) -> bool:
+        with self._get_connection() as conn:
+            transaction_started = False
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                transaction_started = True
+                row = conn.execute("SELECT * FROM emoji WHERE path = ?", (old_path,)).fetchone()
+                if not row:
+                    conn.execute("ROLLBACK")
+                    return False
+
+                existing = conn.execute("SELECT 1 FROM emoji WHERE path = ?", (new_path,)).fetchone()
+                if existing:
+                    conn.execute("ROLLBACK")
+                    return False
+
+                scalar = {
+                    key: self._coerce_int_flag(value) if key == "is_favorite" else value
+                    for key, value in updates.items()
+                    if key
+                    in {
+                        "hash",
+                        "phash",
+                        "desc",
+                        "source",
+                        "origin_target",
+                        "scope_mode",
+                        "created_at",
+                        "use_count",
+                        "last_used_at",
+                        "is_favorite",
+                    }
+                }
+
+                conn.execute(
+                    """
+                    INSERT INTO emoji
+                    (path, hash, phash, category, desc, source, origin_target,
+                     scope_mode, created_at, use_count, last_used_at, is_favorite)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        new_path,
+                        scalar.get("hash", row["hash"]),
+                        scalar.get("phash", row["phash"]),
+                        category,
+                        scalar.get("desc", row["desc"]),
+                        scalar.get("source", row["source"]),
+                        scalar.get("origin_target", row["origin_target"]),
+                        scalar.get("scope_mode", row["scope_mode"]),
+                        scalar.get("created_at", row["created_at"]),
+                        scalar.get("use_count", row["use_count"]),
+                        scalar.get("last_used_at", row["last_used_at"]),
+                        scalar.get("is_favorite", row["is_favorite"]),
+                    ),
+                )
+                if "tags" in updates:
+                    for tag in self._normalize_multi_value(updates.get("tags")):
+                        conn.execute(
+                            "INSERT OR IGNORE INTO emoji_tag (path, tag) VALUES (?, ?)",
+                            (new_path, tag),
+                        )
+                else:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO emoji_tag (path, tag)
+                        SELECT ?, tag FROM emoji_tag WHERE path = ?
+                        """,
+                        (new_path, old_path),
+                    )
+
+                if "scenes" in updates:
+                    for scene in self._normalize_multi_value(updates.get("scenes")):
+                        conn.execute(
+                            "INSERT OR IGNORE INTO emoji_scene (path, scene) VALUES (?, ?)",
+                            (new_path, scene),
+                        )
+                else:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO emoji_scene (path, scene)
+                        SELECT ?, scene FROM emoji_scene WHERE path = ?
+                        """,
+                        (new_path, old_path),
+                    )
+                conn.execute("DELETE FROM emoji WHERE path = ?", (old_path,))
+                conn.execute("COMMIT")
+                return True
+            except Exception:
+                if transaction_started and conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
 
     # ── 批量操作 ──
 

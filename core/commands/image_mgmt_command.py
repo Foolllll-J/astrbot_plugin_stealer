@@ -268,9 +268,13 @@ class ImageManagementCommand:
 
         if success:
             # 从索引中移除
-            if target_image["path"] in image_index:
-                del image_index[target_image["path"]]
-                await self.plugin._save_index(image_index)
+            target_hash = str(target_image.get("hash", "") or "").strip()
+            for path, meta in list(image_index.items()):
+                if path == target_image["path"] or (
+                    target_hash and isinstance(meta, dict) and meta.get("hash") == target_hash
+                ):
+                    del image_index[path]
+            await self.plugin._save_index(image_index)
 
             yield event.plain_result(
                 f"✅ 已删除表情包:\n文件: {target_image['name']}\n分类: {target_image['category']}"
@@ -304,11 +308,15 @@ class ImageManagementCommand:
             yield event.plain_result(f"❌ 拉黑失败: {target_image['name']}")
             return
 
-        if target_image["path"] in image_index:
-            del image_index[target_image["path"]]
-            await self.plugin._save_index(image_index)
+        target_hash = str(target_image.get("hash", "") or "").strip()
+        for path, meta in list(image_index.items()):
+            if path == target_image["path"] or (
+                target_hash and isinstance(meta, dict) and meta.get("hash") == target_hash
+            ):
+                del image_index[path]
+        await self.plugin._save_index(image_index)
 
-        image_hash = str(target_image.get("hash", "") or "").strip()
+        image_hash = target_hash
         if image_hash and getattr(self.plugin, "cache_service", None):
             await self.plugin.cache_service.set(
                 "blacklist_cache", image_hash, int(time.time()), persist=True
@@ -428,8 +436,8 @@ class ImageManagementCommand:
 
             # 删除主文件（通常在raw目录）
             if Path(img_path).exists():
-                await self.plugin._safe_remove_file(img_path)
-                deleted_files.append(img_path)
+                if await self.plugin._safe_remove_file(img_path):
+                    deleted_files.append(img_path)
                 logger.info(f"已删除主文件: {img_path}")
 
             # 查找并删除categories目录中的对应文件
@@ -441,8 +449,8 @@ class ImageManagementCommand:
                     if category_dir.is_dir():
                         category_file = category_dir / img_name
                         if category_file.exists():
-                            await self.plugin._safe_remove_file(str(category_file))
-                            deleted_files.append(str(category_file))
+                            if await self.plugin._safe_remove_file(str(category_file)):
+                                deleted_files.append(str(category_file))
                             logger.info(f"已删除分类文件: {category_file}")
 
             logger.info(f"删除操作完成，共删除 {len(deleted_files)} 个文件")

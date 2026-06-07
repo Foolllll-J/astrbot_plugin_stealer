@@ -114,6 +114,103 @@ class PluginAPI:
         await self._sync_index()
         return current
 
+    def _build_full_index_snapshot(self) -> dict[str, Any]:
+        index: dict[str, Any] = {}
+        db = self._db
+        if db:
+            index.update(db.get_index_cache_readonly())
+        index.update(self._cache.get_index_cache_readonly())
+        return index
+
+    def _find_index_entry_by_hash(self, img_hash: str) -> tuple[str, dict[str, Any]] | None:
+        db = self._db
+        if db and hasattr(db, "get_emoji_by_hash"):
+            found = db.get_emoji_by_hash(img_hash)
+            if found:
+                return found
+        for path, meta in self._build_full_index_snapshot().items():
+            if isinstance(meta, dict) and meta.get("hash") == img_hash:
+                return path, dict(meta)
+        return None
+
+    async def _refresh_index_cache_from_db(self) -> None:
+        db = self._db
+        if db:
+            await self._cache.set_cache(
+                "index_cache", db.get_index_cache_readonly(), persist=False
+            )
+
+    async def _delete_index_paths(self, paths: list[str]) -> None:
+        db = self._db
+        if db and hasattr(db, "delete_paths"):
+            await db.delete_paths(paths)
+            await self._refresh_index_cache_from_db()
+            return
+        index = self._build_full_index_snapshot()
+        for path in paths:
+            index.pop(path, None)
+        await self._cache.set_cache("index_cache", index, persist=False)
+        await self._sync_index()
+
+    async def _update_index_path(self, path: str, updates: dict[str, Any]) -> bool:
+        db = self._db
+        if db and hasattr(db, "update_path"):
+            ok = await db.update_path(path, updates)
+            if ok:
+                await self._refresh_index_cache_from_db()
+            return ok
+
+        index = self._build_full_index_snapshot()
+        meta = index.get(path)
+        if not isinstance(meta, dict):
+            return False
+        meta.update(updates)
+        index[path] = meta
+        await self._cache.set_cache("index_cache", index, persist=False)
+        await self._sync_index()
+        return True
+
+    async def _move_index_path(
+        self,
+        old_path: str,
+        new_path: str,
+        category: str,
+        updates: dict[str, Any] | None = None,
+    ) -> bool:
+        db = self._db
+        if db and hasattr(db, "move_path"):
+            ok = await db.move_path(old_path, new_path, category, updates or {})
+            if ok:
+                await self._refresh_index_cache_from_db()
+            return ok
+
+        index = self._build_full_index_snapshot()
+        meta = index.pop(old_path, None)
+        if not isinstance(meta, dict):
+            return False
+        meta["path"] = new_path
+        meta["category"] = category
+        if updates:
+            meta.update(updates)
+        index[new_path] = meta
+        await self._cache.set_cache("index_cache", index, persist=False)
+        await self._sync_index()
+        return True
+
+    @staticmethod
+    def _unique_path(target_dir: Path, filename: str) -> Path:
+        candidate = target_dir / filename
+        if not candidate.exists():
+            return candidate
+        stem = candidate.stem
+        suffix = candidate.suffix
+        counter = 1
+        while True:
+            candidate = target_dir / f"{stem}_{counter}{suffix}"
+            if not candidate.exists():
+                return candidate
+            counter += 1
+
     def _get_category_keys(self) -> list[str]:
         cfg = getattr(self.plugin, "plugin_config", None)
         if cfg:
@@ -249,7 +346,19 @@ class PluginAPI:
             "scenes": list(scenes or []),
             "created_at": ts,
         }
-        await self._cache.update_index(lambda cur: cur.__setitem__(str(file_path), data))
+        db = self._db
+        if db and hasattr(db, "insert_batch"):
+            inserted = await db.insert_batch([data])
+            if inserted <= 0:
+                try:
+                    await self.plugin._safe_remove_file(str(file_path))
+                finally:
+                    raise RuntimeError("insert image metadata failed")
+            await self._refresh_index_cache_from_db()
+        else:
+            index = self._build_full_index_snapshot()
+            index[str(file_path)] = data
+            await self._cache.set_cache("index_cache", index, persist=False)
         return {"hash": img_hash, "category": final_cat}
 
     # ── Image serving ─────────────────────────────────────────
@@ -468,7 +577,8 @@ class PluginAPI:
             image = await self._persist_image(
                 file_content=content, file_ext=ext, category="unknown"
             )
-            await self._sync_index()
+            if not self._db:
+                await self._sync_index()
             return jsonify({"success": True, "image": image, "hash": image["hash"]})
         except Exception as e:
             logger.error(f"上传图片失败: {e}", exc_info=True)
@@ -487,53 +597,48 @@ class PluginAPI:
             new_scenes = data.get("scenes", data.get("scene"))
             new_scope = self._norm_scope(data.get("scope_mode"))
             new_favorite = data.get("is_favorite")
-            updated = {"ok": False, "error": ""}
+            found = self._find_index_entry_by_hash(str(img_hash))
+            if not found:
+                return jsonify({"success": False, "error": "Image not found"})
+            target, meta = found
 
-            async def updater(current: dict):
-                target = None
-                meta = None
-                for p, m in current.items():
-                    if isinstance(m, dict) and m.get("hash") == img_hash:
-                        target, meta = p, m
-                        break
-                if not target or not meta:
-                    updated["error"] = "Image not found"
-                    return
-                if new_tags is not None:
-                    meta["tags"] = (
-                        self._split_csv(new_tags) if isinstance(new_tags, str) else new_tags
-                    )
-                if new_desc is not None:
-                    meta["desc"] = new_desc
-                if new_scenes is not None:
-                    meta["scenes"] = self._split_scenes(new_scenes)
-                if new_scope:
-                    if new_scope == "local" and not str(meta.get("origin_target", "")).strip():
-                        updated["error"] = "Origin target missing"
-                        return
-                    meta["scope_mode"] = new_scope
-                if new_favorite is not None:
-                    meta["is_favorite"] = 1 if new_favorite else 0
-                if new_cat and new_cat != meta.get("category"):
-                    old_path = Path(target)
-                    if not old_path.exists():
-                        updated["error"] = "Source file not found"
-                        return
-                    target_dir = self._cfg.ensure_category_dir(new_cat)
-                    new_path = target_dir / old_path.name
-                    await asyncio.to_thread(shutil.move, str(old_path), str(new_path))
-                    del current[target]
-                    meta["path"] = str(new_path)
-                    meta["category"] = new_cat
-                    current[str(new_path)] = meta
-                else:
-                    current[target] = meta
-                updated["ok"] = True
+            updates: dict[str, Any] = {}
+            if new_tags is not None:
+                updates["tags"] = self._split_csv(new_tags) if isinstance(new_tags, str) else new_tags
+            if new_desc is not None:
+                updates["desc"] = new_desc
+            if new_scenes is not None:
+                updates["scenes"] = self._split_scenes(new_scenes)
+            if new_scope:
+                if new_scope == "local" and not str(meta.get("origin_target", "")).strip():
+                    return jsonify({"success": False, "error": "Origin target missing"})
+                updates["scope_mode"] = new_scope
+            if new_favorite is not None:
+                updates["is_favorite"] = 1 if new_favorite else 0
 
-            await self._update_index(updater)
-            await self._sync_index()
-            if not updated["ok"]:
-                return jsonify({"success": False, "error": updated["error"] or "Update failed"})
+            if new_cat and new_cat != meta.get("category"):
+                old_path = Path(target)
+                if not old_path.exists():
+                    return jsonify({"success": False, "error": "Source file not found"})
+                target_dir = self._cfg.ensure_category_dir(new_cat)
+                new_path = self._unique_path(target_dir, old_path.name)
+                await asyncio.to_thread(shutil.move, str(old_path), str(new_path))
+                moved = False
+                try:
+                    moved = await self._move_index_path(target, str(new_path), new_cat, updates)
+                finally:
+                    if not moved and new_path.exists() and not old_path.exists():
+                        try:
+                            await asyncio.to_thread(shutil.move, str(new_path), str(old_path))
+                        except Exception as rollback_error:
+                            logger.error(
+                                f"rollback moved image failed: {new_path} -> {old_path}, {rollback_error}"
+                            )
+                if not moved:
+                    return jsonify({"success": False, "error": "Update index failed"})
+            elif updates:
+                if not await self._update_index_path(target, updates):
+                    return jsonify({"success": False, "error": "Update index failed"})
             return jsonify({"success": True})
         except Exception as e:
             logger.error(f"更新图片失败: {e}", exc_info=True)
@@ -547,31 +652,30 @@ class PluginAPI:
                 return jsonify({"success": False, "error": "缺少 hash"})
             blacklist = data.get("blacklist", False)
 
+            index = self._build_full_index_snapshot()
             removed: list[str] = []
-
-            async def remover(current: dict):
-                for p, m in list(current.items()):
-                    if isinstance(m, dict) and m.get("hash") == img_hash:
-                        removed.append(p)
-                        del current[p]
-                        return
-
-            await self._update_index(remover)
-            await self._sync_index()
+            for p, m in index.items():
+                if isinstance(m, dict) and m.get("hash") == img_hash:
+                    removed.append(p)
 
             if removed:
-                target = removed[0]
-                try:
-                    await self.plugin._safe_remove_file(target)
-                except Exception as e:
-                    logger.warning(f"删除文件失败: {e}")
+                deleted_paths: list[str] = []
+                for target in removed:
+                    try:
+                        if await self.plugin._safe_remove_file(target):
+                            deleted_paths.append(target)
+                    except Exception as e:
+                        logger.warning(f"删除文件失败: {e}")
+                if not deleted_paths:
+                    return jsonify({"success": False, "error": "delete file failed"})
+                await self._delete_index_paths(deleted_paths)
                 if blacklist:
                     await self._cache.set(
                         "blacklist_cache", img_hash, int(time.time()), persist=True
                     )
                 if hasattr(self.plugin, "image_processor_service"):
                     self.plugin.image_processor_service.invalidate_cache(img_hash)
-                return jsonify({"success": True})
+                return jsonify({"success": True, "count": len(deleted_paths)})
             return jsonify({"success": False, "error": "图片未找到"})
         except Exception as e:
             logger.error(f"删除图片失败: {e}", exc_info=True)
@@ -585,24 +689,20 @@ class PluginAPI:
             hashes = set(data.get("hashes", []))
             if not hashes:
                 return jsonify({"success": True, "count": 0})
-            removed_paths: list[str] = []
-
-            async def updater(current: dict):
-                for p, m in list(current.items()):
-                    if isinstance(m, dict) and m.get("hash") in hashes:
-                        removed_paths.append(p)
-                        del current[p]
-
-            await self._update_index(updater)
-            await self._sync_index()
-            deleted = 0
+            index = self._build_full_index_snapshot()
+            removed_paths = [
+                p for p, m in index.items() if isinstance(m, dict) and m.get("hash") in hashes
+            ]
+            deleted_paths: list[str] = []
             for p in removed_paths:
                 try:
-                    await self.plugin._safe_remove_file(p)
-                    deleted += 1
+                    if await self.plugin._safe_remove_file(p):
+                        deleted_paths.append(p)
                 except Exception as e:
                     logger.warning(f"删除文件失败 {p}: {e}")
-            return jsonify({"success": True, "count": deleted})
+            if deleted_paths:
+                await self._delete_index_paths(deleted_paths)
+            return jsonify({"success": True, "count": len(deleted_paths)})
         except Exception as e:
             logger.error(f"批量删除失败: {e}", exc_info=True)
             return jsonify({"success": False, "error": str(e)})
@@ -616,27 +716,31 @@ class PluginAPI:
                 return jsonify({"success": False, "error": "缺少参数"})
             moved_count = 0
 
-            async def updater(current: dict):
-                nonlocal moved_count
-                target_dir = self._cfg.ensure_category_dir(target_cat)
-                for p, m in list(current.items()):
-                    if not isinstance(m, dict) or m.get("hash") not in hashes:
-                        continue
-                    if m.get("category") == target_cat:
-                        continue
-                    old = Path(p)
-                    if not old.exists():
-                        continue
-                    new = target_dir / old.name
-                    await asyncio.to_thread(shutil.move, str(old), str(new))
-                    del current[p]
-                    m["path"] = str(new)
-                    m["category"] = target_cat
-                    current[str(new)] = m
+            target_dir = self._cfg.ensure_category_dir(target_cat)
+            index = self._build_full_index_snapshot()
+            for p, m in list(index.items()):
+                if not isinstance(m, dict) or m.get("hash") not in hashes:
+                    continue
+                if m.get("category") == target_cat:
+                    continue
+                old = Path(p)
+                if not old.exists():
+                    continue
+                new = self._unique_path(target_dir, old.name)
+                await asyncio.to_thread(shutil.move, str(old), str(new))
+                moved = False
+                try:
+                    moved = await self._move_index_path(p, str(new), target_cat)
+                finally:
+                    if not moved and new.exists() and not old.exists():
+                        try:
+                            await asyncio.to_thread(shutil.move, str(new), str(old))
+                        except Exception as rollback_error:
+                            logger.error(
+                                f"rollback batch move failed: {new} -> {old}, {rollback_error}"
+                            )
+                if moved:
                     moved_count += 1
-
-            await self._update_index(updater)
-            await self._sync_index()
             return jsonify({"success": True, "count": moved_count})
         except Exception as e:
             logger.error(f"批量移动失败: {e}", exc_info=True)
@@ -652,19 +756,15 @@ class PluginAPI:
             updated = 0
             skipped = 0
 
-            async def updater(current: dict):
-                nonlocal updated, skipped
-                for _, m in current.items():
-                    if not isinstance(m, dict) or m.get("hash") not in hashes:
-                        continue
-                    if scope == "local" and not str(m.get("origin_target", "")).strip():
-                        skipped += 1
-                        continue
-                    m["scope_mode"] = scope
+            index = self._build_full_index_snapshot()
+            for p, m in index.items():
+                if not isinstance(m, dict) or m.get("hash") not in hashes:
+                    continue
+                if scope == "local" and not str(m.get("origin_target", "")).strip():
+                    skipped += 1
+                    continue
+                if await self._update_index_path(p, {"scope_mode": scope}):
                     updated += 1
-
-            await self._update_index(updater)
-            await self._sync_index()
             return jsonify({"success": True, "count": updated, "skipped": skipped})
         except Exception as e:
             logger.error(f"批量作用域更新失败: {e}", exc_info=True)
@@ -679,16 +779,12 @@ class PluginAPI:
                 return jsonify({"success": True, "count": 0})
             updated = 0
 
-            async def updater(current: dict):
-                nonlocal updated
-                for _, m in current.items():
-                    if not isinstance(m, dict) or m.get("hash") not in hashes:
-                        continue
-                    m["is_favorite"] = 1 if favorite else 0
+            index = self._build_full_index_snapshot()
+            for p, m in index.items():
+                if not isinstance(m, dict) or m.get("hash") not in hashes:
+                    continue
+                if await self._update_index_path(p, {"is_favorite": 1 if favorite else 0}):
                     updated += 1
-
-            await self._update_index(updater)
-            await self._sync_index()
             return jsonify({"success": True, "count": updated})
         except Exception as e:
             logger.error(f"批量收藏失败: {e}", exc_info=True)
@@ -822,7 +918,8 @@ class PluginAPI:
                     )
                     task["failed"] += 1
                 task["processed"] += 1
-            await self._sync_index()
+            if not self._db:
+                await self._sync_index()
             task["status"] = "completed"
         except Exception as e:
             logger.error(f"批量上传任务 {task_id} 失败: {e}")
@@ -1015,24 +1112,24 @@ class PluginAPI:
             updated = [c for c in cur_cats if c != key]
             deleted = 0
 
-            async def updater(current: dict):
-                nonlocal deleted
-                for p, m in list(current.items()):
-                    if isinstance(m, dict) and m.get("category") == key:
-                        old = Path(p)
-                        if old.exists():
-                            try:
-                                await self.plugin._safe_remove_file(str(old))
-                                deleted += 1
-                                h = m.get("hash")
-                                if h and hasattr(self.plugin, "image_processor_service"):
-                                    self.plugin.image_processor_service.invalidate_cache(h)
-                            except Exception as ex:
-                                logger.warning(f"删除分类文件失败: {old}, {ex}")
-                        del current[p]
+            index = self._build_full_index_snapshot()
+            deleted_paths: list[str] = []
+            for p, m in list(index.items()):
+                if not isinstance(m, dict) or m.get("category") != key:
+                    continue
+                old = Path(p)
+                try:
+                    if not old.exists() or await self.plugin._safe_remove_file(str(old)):
+                        deleted_paths.append(p)
+                        deleted += 1
+                        h = m.get("hash")
+                        if h and hasattr(self.plugin, "image_processor_service"):
+                            self.plugin.image_processor_service.invalidate_cache(h)
+                except Exception as ex:
+                    logger.warning(f"删除分类文件失败: {old}, {ex}")
 
-            await self._update_index(updater)
-            await self._sync_index()
+            if deleted_paths:
+                await self._delete_index_paths(deleted_paths)
 
             cat_dir = self._data_dir / "categories" / key
             try:

@@ -1730,17 +1730,29 @@ body: JSON.stringify({ hashes: Array.from(selectedImages.value), favorite }),
             if (!uploadFile.value) return;
             uploading.value = true;
             try {
-                const uploadRes = await bridge.upload('images/upload', uploadFile.value);
-                if (!uploadRes.success || !uploadRes.hash) {
-                    uploadError.value = uploadRes.error || '上传失败';
+                // Use base64 JSON to avoid ERR_ACCESS_DENIED from bridge.upload()
+                const base64Data = await fileToBase64(uploadFile.value);
+                const uploadRes = await apiFetch('api/images/upload', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        base64: base64Data,
+                        filename: uploadFile.value.name,
+                    }),
+                });
+                const uploadData = await uploadRes.json();
+                if (!uploadData.success || !uploadData.hash) {
+                    uploadError.value = uploadData.error || '上传失败';
                     return;
                 }
-                await bridge.apiPost('images/update', {
-                    hash: uploadRes.hash,
-                    category: uploadForm.emotion,
-                    tags: uploadForm.tags,
-                    scene: uploadForm.scene,
-                    desc: uploadForm.desc,
+                await apiFetch('api/images/update', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        hash: uploadData.hash,
+                        category: uploadForm.emotion,
+                        tags: uploadForm.tags,
+                        scene: uploadForm.scene,
+                        desc: uploadForm.desc,
+                    }),
                 });
                 closeUploadModal();
                 fetchImages(1);

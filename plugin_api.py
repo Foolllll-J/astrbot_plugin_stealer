@@ -567,15 +567,32 @@ class PluginAPI:
     async def handle_upload_image(self):
         try:
             files = await request.files
-            if "file" not in files:
-                return jsonify({"success": False, "error": "没有上传文件"})
-            f = files["file"]
-            ext = Path(f.filename or "upload.png").suffix.lower()
+            file_content = None
+            file_ext = ".png"
+            filename = "upload.png"
+
+            if "file" in files:
+                f = files["file"]
+                file_content = f.read()
+                filename = f.filename or "upload.png"
+            else:
+                data = await request.get_json() or {}
+                b64 = data.get("base64", "")
+                if not b64:
+                    return jsonify({"success": False, "error": "没有上传文件"})
+                if "," in b64:
+                    b64 = b64.split(",")[1]
+                file_content = base64.b64decode(b64)
+                filename = data.get("filename", "upload.png")
+
+            ext = Path(filename).suffix.lower()
             if not self._is_allowed_ext(ext):
                 return jsonify({"success": False, "error": f"不支持的文件类型: {ext}"})
-            content = f.read()
+            if not file_content:
+                return jsonify({"success": False, "error": "文件内容为空"})
+
             image = await self._persist_image(
-                file_content=content, file_ext=ext, category="unknown"
+                file_content=file_content, file_ext=ext, category="unknown"
             )
             if not self._db:
                 await self._sync_index()

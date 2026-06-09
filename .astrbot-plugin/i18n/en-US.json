@@ -2,7 +2,7 @@
   "metadata": {
     "display_name": "Emoji Stealer",
     "short_desc": "Auto-collect and intelligently send stickers",
-    "desc": "Monitors chat images and uses VLM to auto-classify and store them. Intelligently matches and sends stickers based on conversation mood. Supports LLM proactive sticker search, WebUI management panel, smart emotion matching, and multi-platform compatibility."
+    "desc": "Monitors chat images and uses VLM to auto-classify and store them. Intelligently matches and sends stickers based on conversation mood. Supports LLM proactive sticker search, WebUI management, storage cleanup, scope repair, smart emotion matching, and multi-platform compatibility."
   },
   "config": {
     "steal_emoji": {
@@ -25,9 +25,25 @@
       "description": "Content filtering (block inappropriate images)",
       "hint": "Uses VLM to review image content. May increase processing time."
     },
+    "content_filtration_fail_open": {
+      "description": "Allow import on audit service errors",
+      "hint": "Policy hint for audit-service failures only. Images explicitly rejected by moderation will still not be imported."
+    },
+    "steal_by_llm": {
+      "description": "LLM proactive stealing",
+      "hint": "Allows the LLM to proactively import images during conversation.\nRequires steal_emoji to also be enabled.\nThe LLM may tag directly or delegate analysis to VLM.\nWhen the user asks to collect an image, the LLM can respond with this tool."
+    },
     "auto_send": {
       "description": "Auto-send stickers in chat",
       "hint": "Bot will automatically send stickers during conversation. Test first."
+    },
+    "auto_emoji_intent_gate": {
+      "description": "Auto-send intent gate",
+      "hint": "Skips commands, serious/error replies, very short replies, and question-heavy messages where auto-sending is inappropriate."
+    },
+    "auto_emoji_cancel_on_new_message": {
+      "description": "Cancel pending auto-send on new message",
+      "hint": "Cancels the previous delayed auto-send when a new message arrives in the same session."
     },
     "emoji_chance": {
       "description": "Emoji send probability",
@@ -92,6 +108,10 @@
     "max_reg_num": {
       "description": "Maximum emoji count",
       "hint": "Storage limit. Old images are removed when the limit is exceeded."
+    },
+    "storage_cleanup_strategy": {
+      "description": "Storage cleanup strategy",
+      "hint": "conservative=clean stale index rows and temp files only, balanced=also clean orphan files and thumbnail cache, aggressive=also clean raw files."
     },
     "custom_emoji_classification_prompt": {
       "description": "VLM classification prompt",

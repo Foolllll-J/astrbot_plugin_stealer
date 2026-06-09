@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import binascii
 import os
 import shutil
 import time
@@ -25,6 +26,7 @@ class PluginAPI:
     """Backend API provider for plugin Pages."""
 
     ALLOWED_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+    BATCH_TASK_TTL_SECONDS = 30 * 60
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
@@ -47,7 +49,10 @@ class PluginAPI:
             ("/images/batch-favorite", "handle_batch_favorite", ["POST"]),
             ("/images/batch-upload", "handle_batch_upload", ["POST"]),
             ("/images/batch-upload-status", "handle_batch_upload_status", ["GET"]),
+            ("/images/scope-repair", "handle_scope_repair", ["POST"]),
             ("/analyze", "handle_analyze_image", ["POST"]),
+            ("/storage/scan", "handle_storage_scan", ["GET"]),
+            ("/storage/cleanup", "handle_storage_cleanup", ["POST"]),
             ("/stats", "handle_get_stats", ["GET"]),
             ("/categories", "handle_categories", ["GET", "POST"]),
             ("/categories/delete", "handle_delete_category", ["POST"]),
@@ -276,6 +281,138 @@ class PluginAPI:
     def _is_allowed_ext(self, ext: str) -> bool:
         return str(ext or "").lower() in self.ALLOWED_IMAGE_EXTS
 
+    @staticmethod
+    def _decode_base64_payload(value: str) -> bytes | None:
+        if not value:
+            return None
+        b64_data = value.split(",", 1)[1] if "," in value else value
+        try:
+            return base64.b64decode(b64_data.strip(), validate=True)
+        except (binascii.Error, ValueError):
+            return None
+
+    @staticmethod
+    def _task_now() -> float:
+        return time.time()
+
+    def _prune_batch_upload_tasks(self) -> int:
+        now = self._task_now()
+        expired = []
+        for task_id, task in self.batch_upload_tasks.items():
+            if task.get("status") == "processing":
+                continue
+            done_at = float(task.get("completed_at") or task.get("updated_at") or 0)
+            if done_at and now - done_at > self.BATCH_TASK_TTL_SECONDS:
+                expired.append(task_id)
+        for task_id in expired:
+            self.batch_upload_tasks.pop(task_id, None)
+        return len(expired)
+
+    def _is_under_data_dir(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to(self._data_dir.resolve())
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _file_stat(path: Path) -> dict[str, Any]:
+        try:
+            stat = path.stat()
+            return {"path": str(path), "size": int(stat.st_size), "mtime": int(stat.st_mtime)}
+        except OSError:
+            return {"path": str(path), "size": 0, "mtime": 0}
+
+    def _iter_files(self, root: Path, *, allowed_exts_only: bool = False) -> list[Path]:
+        if not root.exists() or not root.is_dir():
+            return []
+        files: list[Path] = []
+        for path in root.rglob("*"):
+            try:
+                if not path.is_file():
+                    continue
+                if allowed_exts_only and path.suffix.lower() not in self.ALLOWED_IMAGE_EXTS:
+                    continue
+                files.append(path)
+            except OSError:
+                continue
+        return files
+
+    def _build_storage_report(self, *, include_items: bool = False) -> dict[str, Any]:
+        index = self._build_full_index_snapshot()
+        indexed_paths = {str(Path(path)) for path in index.keys() if isinstance(path, str)}
+        stale_index = [
+            self._file_stat(Path(path))
+            for path in indexed_paths
+            if not Path(path).is_file()
+        ]
+
+        category_files = self._iter_files(self._data_dir / "categories", allowed_exts_only=True)
+        orphan_files = [
+            self._file_stat(path)
+            for path in category_files
+            if str(path) not in indexed_paths
+        ]
+
+        thumb_files = [self._file_stat(path) for path in self._iter_files(self._data_dir / "thumb_cache")]
+        temp_files = [self._file_stat(path) for path in self._iter_files(self._data_dir / "temp")]
+        raw_files = [self._file_stat(path) for path in self._iter_files(self._data_dir / "raw")]
+
+        def summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+            result = {
+                "count": len(items),
+                "bytes": sum(int(item.get("size", 0) or 0) for item in items),
+                "samples": items[:20],
+            }
+            if include_items:
+                result["items"] = items
+            return result
+
+        return {
+            "success": True,
+            "stale_index": summary(stale_index),
+            "orphan_files": summary(orphan_files),
+            "thumb_cache": summary(thumb_files),
+            "temp_files": summary(temp_files),
+            "raw_files": summary(raw_files),
+        }
+
+    async def _remove_report_files(self, items: list[dict[str, Any]]) -> int:
+        removed = 0
+        for item in items:
+            path = Path(str(item.get("path", "")))
+            if not path or not self._is_under_data_dir(path):
+                continue
+            try:
+                if path.is_file():
+                    ok = await self.plugin._safe_remove_file(str(path))
+                    if ok:
+                        removed += 1
+            except Exception as e:
+                logger.warning(f"cleanup file failed: {path}, {e}")
+        return removed
+
+    def _parse_upload_metadata(self, data: dict[str, Any]) -> dict[str, Any]:
+        category = str(data.get("category", data.get("emotion", "")) or "").strip()
+        tags_raw = data.get("tags", [])
+        if isinstance(tags_raw, str):
+            tags = self._split_csv(tags_raw)
+        elif isinstance(tags_raw, list):
+            tags = [str(tag).strip() for tag in tags_raw if str(tag).strip()]
+        else:
+            tags = []
+        scenes = self._split_scenes(data.get("scenes", data.get("scene")))
+        scope_mode = self._norm_scope(data.get("scope_mode"))
+        origin_target = str(data.get("origin_target", "") or "").strip()
+        return {
+            "category": category or "unknown",
+            "tags": tags,
+            "desc": str(data.get("desc", data.get("description", "")) or ""),
+            "scenes": scenes,
+            "scope_mode": scope_mode,
+            "origin_target": origin_target,
+        }
+
     def _build_categories_list(self, counts: dict[str, int]) -> list[dict]:
         result: list[dict] = []
         if hasattr(self.plugin, "plugin_config"):
@@ -328,6 +465,8 @@ class PluginAPI:
         tags: list[str] | None = None,
         desc: str = "",
         scenes: list[str] | None = None,
+        scope_mode: str = "public",
+        origin_target: str = "",
     ) -> dict:
         final_cat = str(category or "").strip() or "unknown"
         ts = int(datetime.now().timestamp())
@@ -344,6 +483,8 @@ class PluginAPI:
             "tags": list(tags or []),
             "desc": str(desc or ""),
             "scenes": list(scenes or []),
+            "scope_mode": self._norm_scope(scope_mode),
+            "origin_target": str(origin_target or "").strip(),
             "created_at": ts,
         }
         db = self._db
@@ -567,23 +708,27 @@ class PluginAPI:
     async def handle_upload_image(self):
         try:
             files = await request.files
+            form = await request.form
             file_content = None
             file_ext = ".png"
             filename = "upload.png"
+            metadata_source: dict[str, Any] = {}
 
             if "file" in files:
                 f = files["file"]
                 file_content = f.read()
                 filename = f.filename or "upload.png"
+                metadata_source = dict(form)
             else:
                 data = await request.get_json() or {}
                 b64 = data.get("base64", "")
                 if not b64:
                     return jsonify({"success": False, "error": "没有上传文件"})
-                if "," in b64:
-                    b64 = b64.split(",")[1]
-                file_content = base64.b64decode(b64)
+                file_content = self._decode_base64_payload(b64)
+                if file_content is None:
+                    return jsonify({"success": False, "error": "图片数据无效"})
                 filename = data.get("filename", "upload.png")
+                metadata_source = data
 
             ext = Path(filename).suffix.lower()
             if not self._is_allowed_ext(ext):
@@ -591,8 +736,16 @@ class PluginAPI:
             if not file_content:
                 return jsonify({"success": False, "error": "文件内容为空"})
 
+            metadata = self._parse_upload_metadata(metadata_source)
             image = await self._persist_image(
-                file_content=file_content, file_ext=ext, category="unknown"
+                file_content=file_content,
+                file_ext=ext,
+                category=metadata["category"],
+                tags=metadata["tags"],
+                desc=metadata["desc"],
+                scenes=metadata["scenes"],
+                scope_mode=metadata["scope_mode"],
+                origin_target=metadata["origin_target"],
             )
             if not self._db:
                 await self._sync_index()
@@ -809,6 +962,7 @@ class PluginAPI:
 
     async def handle_batch_upload(self):
         try:
+            self._prune_batch_upload_tasks()
             files_data = []
             try:
                 data = await request.get_json()
@@ -817,9 +971,7 @@ class PluginAPI:
             if data and "_files" in data:
                 for fi in data.get("_files", []):
                     b64 = fi.get("base64", "")
-                    if "," in b64:
-                        b64 = b64.split(",")[1]
-                    content = base64.b64decode(b64)
+                    content = self._decode_base64_payload(b64)
                     ext = Path(fi.get("name", "upload.png")).suffix.lower()
                     if not self._is_allowed_ext(ext):
                         continue
@@ -865,6 +1017,7 @@ class PluginAPI:
                 return jsonify({"success": False, "error": "未配置任何分类"})
 
             task_id = str(uuid.uuid4())
+            now = self._task_now()
             self.batch_upload_tasks[task_id] = {
                 "status": "processing",
                 "total": len(files_data),
@@ -872,6 +1025,8 @@ class PluginAPI:
                 "success": 0,
                 "failed": 0,
                 "results": [],
+                "created_at": now,
+                "updated_at": now,
             }
             asyncio.create_task(
                 self._process_batch(task_id, files_data, category, auto_analyze, fallback)
@@ -889,6 +1044,7 @@ class PluginAPI:
             if not task:
                 return
             for fd in files_data:
+                tmp: Path | None = None
                 try:
                     tags, desc, scenes = [], "", []
                     final_cat = category or fallback
@@ -911,9 +1067,11 @@ class PluginAPI:
                                     tags = rt or []
                                     desc = rd or ""
                                     scenes = rs or []
-                            await asyncio.to_thread(lambda: tmp.unlink() if tmp.exists() else None)
                         except Exception as e:
                             logger.warning(f"自动分析失败: {e}")
+                        finally:
+                            if tmp is not None:
+                                await asyncio.to_thread(lambda: tmp.unlink() if tmp.exists() else None)
 
                     img = await self._persist_image(
                         file_content=fd["content"],
@@ -935,16 +1093,22 @@ class PluginAPI:
                     )
                     task["failed"] += 1
                 task["processed"] += 1
+                task["updated_at"] = self._task_now()
             if not self._db:
                 await self._sync_index()
             task["status"] = "completed"
+            task["completed_at"] = self._task_now()
+            task["updated_at"] = task["completed_at"]
         except Exception as e:
             logger.error(f"批量上传任务 {task_id} 失败: {e}")
             if task_id in self.batch_upload_tasks:
                 self.batch_upload_tasks[task_id]["status"] = "failed"
                 self.batch_upload_tasks[task_id]["error"] = str(e)
+                self.batch_upload_tasks[task_id]["completed_at"] = self._task_now()
+                self.batch_upload_tasks[task_id]["updated_at"] = self.batch_upload_tasks[task_id]["completed_at"]
 
     async def handle_batch_upload_status(self):
+        self._prune_batch_upload_tasks()
         task_id = request.args.get("task_id", "").strip()
         if not task_id:
             return jsonify({"success": False, "error": "无效的任务ID"})
@@ -964,6 +1128,113 @@ class PluginAPI:
                 "results": task.get("results", []),
             }
         )
+
+    # ── Repair / Storage maintenance ─────────────────────────
+
+    async def handle_scope_repair(self):
+        try:
+            data = await request.get_json() or {}
+            origin_target = str(data.get("origin_target", "") or "").strip()
+            if not origin_target:
+                return jsonify({"success": False, "error": "缺少 origin_target"})
+
+            hashes_raw = data.get("hashes", [])
+            hashes = {str(h).strip() for h in hashes_raw if str(h).strip()}
+            scope_mode = self._norm_scope(data.get("scope_mode", "local"))
+            only_missing = str(data.get("only_missing", "true")).lower() != "false"
+
+            updated = 0
+            skipped = 0
+            index = self._build_full_index_snapshot()
+            for path, meta in index.items():
+                if not isinstance(meta, dict):
+                    continue
+                img_hash = str(meta.get("hash", "") or "")
+                if hashes and img_hash not in hashes:
+                    continue
+                if only_missing and str(meta.get("origin_target", "") or "").strip():
+                    skipped += 1
+                    continue
+                updates = {"origin_target": origin_target}
+                if scope_mode:
+                    updates["scope_mode"] = scope_mode
+                if await self._update_index_path(path, updates):
+                    updated += 1
+
+            return jsonify({"success": True, "count": updated, "skipped": skipped})
+        except Exception as e:
+            logger.error(f"作用域来源修复失败: {e}", exc_info=True)
+            return jsonify({"success": False, "error": str(e)})
+
+    async def handle_storage_scan(self):
+        try:
+            return jsonify(self._build_storage_report())
+        except Exception as e:
+            logger.error(f"存储扫描失败: {e}", exc_info=True)
+            return jsonify({"success": False, "error": str(e)})
+
+    async def handle_storage_cleanup(self):
+        try:
+            data = await request.get_json() or {}
+            report = self._build_storage_report(include_items=True)
+            sections_raw = data.get("sections")
+            if isinstance(sections_raw, list):
+                sections = {str(section) for section in sections_raw}
+            else:
+                sections = {
+                    key
+                    for key in ("stale_index", "orphan_files", "thumb_cache", "temp_files", "raw_files")
+                    if str(data.get(key, "false")).lower() == "true"
+                }
+
+            if not sections:
+                strategy = str(
+                    data.get(
+                        "strategy",
+                        getattr(self.plugin, "storage_cleanup_strategy", "balanced"),
+                    )
+                    or "balanced"
+                )
+                if strategy == "conservative":
+                    sections = {"stale_index", "temp_files"}
+                elif strategy == "aggressive":
+                    sections = {
+                        "stale_index",
+                        "orphan_files",
+                        "thumb_cache",
+                        "temp_files",
+                        "raw_files",
+                    }
+                else:
+                    sections = {"stale_index", "orphan_files", "thumb_cache", "temp_files"}
+
+            removed: dict[str, int] = {}
+            if "stale_index" in sections:
+                index = self._build_full_index_snapshot()
+                stale_paths = [
+                    path for path in index.keys() if isinstance(path, str) and not Path(path).is_file()
+                ]
+                if stale_paths:
+                    await self._delete_index_paths(stale_paths)
+                removed["stale_index"] = len(stale_paths)
+
+            for key in ("orphan_files", "thumb_cache", "temp_files", "raw_files"):
+                if key not in sections:
+                    continue
+                removed[key] = await self._remove_report_files(
+                    report.get(key, {}).get("items", [])
+                )
+
+            return jsonify(
+                {
+                    "success": True,
+                    "removed": removed,
+                    "report": self._build_storage_report(),
+                }
+            )
+        except Exception as e:
+            logger.error(f"存储清理失败: {e}", exc_info=True)
+            return jsonify({"success": False, "error": str(e)})
 
     # ── VLM Analyze ───────────────────────────────────────────
 
@@ -992,13 +1263,11 @@ class PluginAPI:
 
             # hash 查不到或未提供 hash 时，回退到 base64 方式
             if not file_path and img_base64:
-                import base64
                 import tempfile
 
-                b64_data = img_base64
-                if "," in b64_data:
-                    b64_data = b64_data.split(",", 1)[1]
-                file_content = base64.b64decode(b64_data)
+                file_content = self._decode_base64_payload(img_base64)
+                if file_content is None:
+                    return jsonify({"success": False, "error": "图片数据无效"})
                 ext = ".png"
                 if img_base64.startswith("data:image/jpeg") or img_base64.startswith("data:image/jpg"):
                     ext = ".jpg"

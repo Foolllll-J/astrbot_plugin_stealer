@@ -2,7 +2,7 @@
   "metadata": {
     "display_name": "表情包小偷",
     "short_desc": "自动偷取并智能发送表情包",
-    "desc": "监听聊天中的图片并使用 VLM 自动分类存储，对话时根据情绪智能匹配并发送表情包。支持 LLM 主动搜索表情包、WebUI 管理面板、智能情绪匹配、多平台适配。"
+    "desc": "监听聊天中的图片并使用 VLM 自动分类存储，对话时根据情绪智能匹配并发送表情包。支持 LLM 主动搜索表情包、WebUI 管理面板、存储清理、作用域修复、智能情绪匹配和多平台适配。"
   },
   "config": {
     "steal_emoji": {
@@ -25,9 +25,25 @@
       "description": "内容审核（过滤不当图片）",
       "hint": "开启后会使用 VLM 审核图片内容，可能增加处理时间"
     },
+    "content_filtration_fail_open": {
+      "description": "内容审核异常时允许入库",
+      "hint": "仅作为审核服务异常时的策略提示；明确审核不通过的图片仍不会入库"
+    },
+    "steal_by_llm": {
+      "description": "LLM 自主偷取",
+      "hint": "开启后 LLM 可在对话中主动偷取图片入库。\n需要 steal_emoji 同时开启。\nLLM 可自己打标或交给 VLM 分析。\n用户说“偷一下这个”时 LLM 会响应。"
+    },
     "auto_send": {
       "description": "自动随聊发送表情包",
       "hint": "开启后 Bot 会在聊天中自动发送表情包，建议先测试效果"
+    },
+    "auto_emoji_intent_gate": {
+      "description": "自动表情意图门控",
+      "hint": "开启后会跳过命令、严肃错误回复、过短回复和连续提问等不适合自动发图的场景"
+    },
+    "auto_emoji_cancel_on_new_message": {
+      "description": "新消息取消待发送表情",
+      "hint": "开启后同一会话有新消息到达时，会取消上一轮仍在延迟等待中的自动表情"
     },
     "emoji_chance": {
       "description": "表情包发送概率",
@@ -92,6 +108,10 @@
     "max_reg_num": {
       "description": "最大表情包数量",
       "hint": "表情包存储上限，超过后自动清理旧表情包"
+    },
+    "storage_cleanup_strategy": {
+      "description": "存储清理策略",
+      "hint": "conservative=只清理失效索引和临时文件，balanced=额外清理孤儿文件和缩略图缓存，aggressive=额外清理 raw 目录"
     },
     "custom_emoji_classification_prompt": {
       "description": "VLM 分类提示词",

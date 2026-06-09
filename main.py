@@ -5,6 +5,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import (
@@ -109,9 +111,13 @@ class Main(Star):
         self.emoji_send_delay_max = self.plugin_config.emoji_send_delay_max
         self.max_reg_num = self.plugin_config.max_reg_num
         self.content_filtration = self.plugin_config.content_filtration
+        self.content_filtration_fail_open = self.plugin_config.content_filtration_fail_open
+        self.storage_cleanup_strategy = self.plugin_config.storage_cleanup_strategy
         self.smart_emoji_selection = self.plugin_config.smart_emoji_selection
         self.steal_emoji = self.plugin_config.steal_emoji
         self.steal_by_llm = self.plugin_config.steal_by_llm
+        self.auto_emoji_intent_gate = self.plugin_config.auto_emoji_intent_gate
+        self.auto_emoji_cancel_on_new_message = self.plugin_config.auto_emoji_cancel_on_new_message
         self.categories = list(self.plugin_config.categories or []) or list(
             self.plugin_config.DEFAULT_CATEGORIES
         )
@@ -264,6 +270,30 @@ class Main(Star):
         """创建 fire-and-forget task，并复用 TaskScheduler 的异常日志。"""
         return TaskScheduler.create_detached_task(coro, name=name)
 
+    def _precheck_image_file(self, file_path: str) -> tuple[bool, str]:
+        """轻量校验图片，避免明显无效文件进入 VLM 流水线。"""
+        path = Path(file_path)
+        if not path.exists():
+            return False, f"图片文件不存在: {file_path}"
+        if not path.is_file():
+            return False, f"路径不是文件: {file_path}"
+        if path.suffix.lower() not in PluginAPI.ALLOWED_IMAGE_EXTS:
+            return False, f"不支持的图片类型: {path.suffix or '无扩展名'}"
+        try:
+            size = path.stat().st_size
+        except OSError as e:
+            return False, f"无法读取图片文件: {e}"
+        if size <= 0:
+            return False, "图片文件为空"
+        if size > 25 * 1024 * 1024:
+            return False, "图片文件过大，超过 25MB"
+        try:
+            with Image.open(path) as img:
+                img.verify()
+        except Exception as e:
+            return False, f"图片格式校验失败: {e}"
+        return True, ""
+
     def get_event_target(self, event: AstrMessageEvent) -> tuple[str, str]:
         if self.plugin_config is None:
             return "", ""
@@ -398,6 +428,14 @@ class Main(Star):
     )
     _mark_auto_emoji_sent = lambda self, event: self._emoji_sender_engine.mark_auto_emoji_sent(  # noqa: E731
         event
+    )
+    _cancel_pending_auto_emoji = (  # noqa: E731
+        lambda self, event, reason="new_message": self._emoji_sender_engine.cancel_pending_auto_emoji(
+            event, reason
+        )
+    )
+    _schedule_auto_emoji_task = (  # noqa: E731
+        lambda self, event, task: self._emoji_sender_engine.schedule_auto_emoji_task(event, task)
     )
     _try_send_emoji = lambda self, event, emotions, text: self._emoji_sender_engine.try_send_emoji(  # noqa: E731
         event, emotions, text
@@ -654,6 +692,9 @@ class Main(Star):
                     scenes_items = PluginAPI._split_scenes(raw_scenes)
                     scenes_str = ", ".join(scenes_items)
                     source = str(meta.get("source", "") or "") if isinstance(meta, dict) else ""
+                    scope_mode = str(meta.get("scope_mode", "public") or "public") if isinstance(meta, dict) else "public"
+                    origin_target = str(meta.get("origin_target", "") or "") if isinstance(meta, dict) else ""
+                    use_count = int(meta.get("use_count", 0) or 0) if isinstance(meta, dict) else 0
 
                     candidate_id = f"emoji_{i + 1}"
                     candidates.append(
@@ -665,6 +706,9 @@ class Main(Star):
                             "tags": tags,
                             "scenes": scenes_str,
                             "source": source,
+                            "scope_mode": scope_mode,
+                            "origin_target": origin_target,
+                            "use_count": use_count,
                         }
                     )
                     result_lines.append(f"\n[{i + 1}] 分类：{emotion}")
@@ -674,6 +718,9 @@ class Main(Star):
                         result_lines.append(f"    场景：{scenes_str}")
                     else:
                         result_lines.append("    场景：无")
+                    result_lines.append(f"    作用域：{scope_mode}")
+                    if use_count:
+                        result_lines.append(f"    使用次数：{use_count}")
                     if source == "qq_store":
                         result_lines.append("    来源：QQ商城")
                     result_lines.append(f"    描述：{desc}")
@@ -710,26 +757,26 @@ class Main(Star):
 
         try:
             if not self.is_send_enabled_for_event(event):
-                yield "发送失败：当前群聊已禁用表情包功能"
+                yield "发送失败：reason=send_disabled。当前会话已禁用表情包发送功能，请不要继续调用发送工具。"
                 return
 
             if emoji_id is None:
-                yield "发送失败：缺少 emoji_id 参数。请先调用 search_emoji，再传入候选编号。"
+                yield "发送失败：reason=missing_id。缺少 emoji_id 参数。请先调用 search_emoji，再传入候选编号。"
                 return
 
             try:
                 emoji_id = int(emoji_id)
             except Exception:
-                yield f"发送失败：编号 {emoji_id} 无法解析为整数，请输入有效的数字编号"
+                yield f"发送失败：reason=invalid_id。编号 {emoji_id} 无法解析为整数，请输入有效的数字编号。"
                 return
 
             candidates = turn_state.get_candidates()
             if not candidates:
-                yield "发送失败：没有可用的候选列表。请先调用 search_emoji 搜索表情包。"
+                yield "发送失败：reason=candidate_expired。没有可用候选列表。请先调用 search_emoji 重新搜索。"
                 return
 
             if emoji_id < 1 or emoji_id > len(candidates):
-                yield f"发送失败：编号 {emoji_id} 无效。可选编号范围：1-{len(candidates)}，请重新选择。"
+                yield f"发送失败：reason=invalid_id。编号 {emoji_id} 无效。可选编号范围：1-{len(candidates)}，请重新选择。"
                 return
 
             selected = candidates[emoji_id - 1]
@@ -738,17 +785,17 @@ class Main(Star):
             emotion = selected["emotion"]
 
             if not os.path.exists(path):
-                yield f"发送失败：表情包文件已丢失。\n你选择的是：编号 {emoji_id}，分类 {emotion}，描述 {desc}\n请重新搜索并选择其他表情包。"
+                yield f"发送失败：reason=file_missing。表情包文件已丢失。\n你选择的是：编号 {emoji_id}，分类 {emotion}，描述 {desc}\n请重新搜索并选择其他表情包。"
                 return
 
             if not self.emoji_selector.is_path_allowed_for_event(path, event):
-                yield "发送失败：该表情包被限制为仅来源群可发送，请选择其他表情包。"
+                yield "发送失败：reason=scope_denied。该表情包被限制为仅来源会话可发送，请选择 public 表情或重新搜索。"
                 return
 
             logger.info(f"[Tool] 发送选中的表情包: {path} (emotion={emotion})")
             send_mode = await self.emoji_selector.send_emoji_message(event, path)
             if not send_mode:
-                yield "发送失败：表情包编码或发送失败，请重试。"
+                yield "发送失败：reason=send_failed。表情包编码或平台发送失败，请重新搜索或选择其他候选。"
                 return
             sent_as_sticker = send_mode == "telegram_sticker"
 
@@ -823,6 +870,13 @@ class Main(Star):
                 yield f"偷取失败：图片文件不存在: {temp_path}"
                 return
 
+            precheck_ok, precheck_reason = self._precheck_image_file(temp_path)
+            if not precheck_ok:
+                if is_temp:
+                    await self._safe_remove_file(temp_path)
+                yield f"偷取失败：{precheck_reason}"
+                return
+
             # 记下入库存前已有的路径，之后 diff 找出 VLM 分析结果
             idx_before = await self._load_index()
             before_paths = set(idx_before.keys()) if idx_before else set()
@@ -834,7 +888,12 @@ class Main(Star):
             )
 
             if not success:
-                yield "偷取失败：VLM 分析未通过（可能已存在、内容不合适或无法识别为表情包）"
+                fail_open_hint = (
+                    "。已启用审核失败开放策略，但明确审核不通过或重复图片不会入库"
+                    if getattr(self, "content_filtration_fail_open", False)
+                    else ""
+                )
+                yield f"偷取失败：VLM 分析未通过（可能已存在、内容不合适或无法识别为表情包）{fail_open_hint}"
                 return
 
             if merged_idx:
@@ -938,6 +997,8 @@ class Main(Star):
     async def on_message(self, event: AstrMessageEvent):
         """消息监听：偷取消息中的图片并分类存储。"""
         # 每条新消息到达时重置回合状态，防止上一轮的标记影响当前对话
+        if getattr(self, "auto_emoji_cancel_on_new_message", True):
+            self._cancel_pending_auto_emoji(event)
         self._emoji_sender_engine.reset_turn_state(event)
         event_handler = self._get_event_handler(
             log_message="[Stealer] event_handler 未初始化，跳过消息处理",
@@ -1097,10 +1158,11 @@ class Main(Star):
             user_query = event.get_message_str() or ""
         except Exception:
             pass
-        self._safe_create_task(
+        task = self._safe_create_task(
             self._async_analyze_and_send_emoji(event, cleaned_text, emotions, user_query=user_query),
             name="emoji_analyze_passive",
         )
+        self._schedule_auto_emoji_task(event, task)
         return True
 
     async def initialize(self):

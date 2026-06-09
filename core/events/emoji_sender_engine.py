@@ -88,6 +88,7 @@ class EmojiSenderEngine:
         self._auto_emoji_cooldowns: dict[str, float] = {}
         self._auto_emoji_cooldowns_max = 1000  # 最大条目数，防止内存泄漏
         self._auto_emoji_cooldowns_lock = asyncio.Lock()
+        self._pending_auto_emoji_tasks: dict[str, asyncio.Task] = {}
 
     # --- 状态管理 ---
 
@@ -132,20 +133,77 @@ class EmojiSenderEngine:
             except Exception:
                 pass
 
+    def cancel_pending_auto_emoji(self, event: AstrMessageEvent, reason: str = "new_message") -> bool:
+        """取消当前会话尚未发出的自动表情任务。"""
+        key = self.get_auto_emoji_session_key(event)
+        task = self._pending_auto_emoji_tasks.pop(key, None)
+        if task and not task.done():
+            task.cancel()
+            logger.debug(f"[EmojiSenderEngine] 取消待发送自动表情: session={key}, reason={reason}")
+            return True
+        return False
+
+    def schedule_auto_emoji_task(
+        self,
+        event: AstrMessageEvent,
+        task: asyncio.Task | None,
+    ) -> asyncio.Task | None:
+        """记录当前会话的自动表情任务，并替换掉旧任务。"""
+        if task is None:
+            return None
+        key = self.get_auto_emoji_session_key(event)
+        old_task = self._pending_auto_emoji_tasks.get(key)
+        if old_task and old_task is not task and not old_task.done():
+            old_task.cancel()
+        self._pending_auto_emoji_tasks[key] = task
+
+        def _clear(done_task: asyncio.Task) -> None:
+            if self._pending_auto_emoji_tasks.get(key) is done_task:
+                self._pending_auto_emoji_tasks.pop(key, None)
+
+        task.add_done_callback(_clear)
+        return task
+
     # --- 决策检查 ---
 
     def should_skip_auto_emoji_by_gate(self, text: str) -> bool:
         """根据文本内容判断是否跳过自动发送。"""
         if not text:
             return True
+        if not getattr(self.plugin, "auto_emoji_intent_gate", True):
+            return False
+        normalized = re.sub(r"\s+", " ", text).strip()
+        if len(normalized) <= 2:
+            return True
         # 如果包含明确的指令或标记，跳过自动发送
         skip_patterns = [
             r"/meme\s+\w+",
             r"^\\/",
+            r"^\s*[!！/#]",
         ]
         for pattern in skip_patterns:
             if re.search(pattern, text, re.IGNORECASE):
                 return True
+        serious_keywords = (
+            "抱歉",
+            "对不起",
+            "错误",
+            "失败",
+            "异常",
+            "无法",
+            "不能",
+            "隐私",
+            "安全",
+            "违规",
+            "风险",
+            "请提供",
+            "需要更多",
+        )
+        if any(keyword in normalized for keyword in serious_keywords):
+            return True
+        question_marks = normalized.count("?") + normalized.count("？")
+        if question_marks >= 2:
+            return True
         return False
 
     async def is_auto_emoji_cooldown_ready(self, event: AstrMessageEvent) -> bool:
@@ -327,6 +385,9 @@ class EmojiSenderEngine:
             if sent:
                 await self.mark_auto_emoji_sent(event)
                 self.emoji_turn_state(event).mark_active_sent()
+        except asyncio.CancelledError:
+            logger.debug("[EmojiSenderEngine] 自动表情任务已取消")
+            raise
         except Exception as e:
             logger.debug(f"[EmojiSenderEngine] 异步分析发送表情包失败: {e}")
 

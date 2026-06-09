@@ -29,6 +29,8 @@ class PluginConfig(BaseModel):
     emoji_send_delay: float = 5.0
     emoji_send_delay_random: bool = False
     emoji_send_delay_max: float = 8.0
+    auto_emoji_intent_gate: bool = True
+    auto_emoji_cancel_on_new_message: bool = True
 
     # === 群聊过滤 ===
     steal_target_whitelist: list[str] = []
@@ -48,6 +50,8 @@ class PluginConfig(BaseModel):
     # === 内部常量/高级配置 ===
     max_reg_num: int = 100
     content_filtration: bool = False  # 内容审核开关
+    content_filtration_fail_open: bool = False
+    storage_cleanup_strategy: str = "balanced"
     image_processing_cooldown: int = 30
     enable_natural_emotion_analysis: bool = True  # 情绪识别模式
     emotion_analysis_provider_id: str = ""  # 情绪分析专用模型

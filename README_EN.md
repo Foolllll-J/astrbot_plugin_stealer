@@ -8,9 +8,14 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 ![Python Version](https://img.shields.io/badge/Python-3.10%2B-blue)
-![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A54.10.4-green)
+![AstrBot](https://img.shields.io/badge/AstrBot-%E2%89%A54.24.1-green)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
 [![Last Commit](https://img.shields.io/github/last-commit/nagatoquin33/astrbot_plugin_stealer)](https://github.com/nagatoquin33/astrbot_plugin_stealer/commits/master)
+
+**Language / 语言**
+
+[![中文](https://img.shields.io/badge/中文-README-lightgrey)](README.md)
+[![English](https://img.shields.io/badge/English-current-blue)](README_EN.md)
 
 </div>
 
@@ -31,7 +36,7 @@ This plugin is fully open-source and free. Issues and PRs are welcome.
 | **Emotion Matching** | Analyze the emotion of Bot replies and append a matching emoji |
 | **LLM Proactive Selection** | LLM can search and send the best emoji via tool calls during conversation |
 | **Dual-Mode Emotion Analysis** | LLM mode (lightweight post-reply analysis, doesn't modify the reply) / Passive tag mode (LLM directly tags emotion) |
-| **WebUI Management** | View, search, delete, blacklist, and manage emojis with `public/local` scoping, origin-group display, and batch operations |
+| **WebUI Management** | View, search, delete, blacklist, and manage emojis with `public/local` scoping, origin display, batch operations, storage cleanup, and scope repair |
 | **Group Filtering** | Whitelist/blacklist control over which groups allow stealing/sending |
 
 ## 🚀 Quick Start
@@ -63,11 +68,12 @@ Open the plugin detail panel in the AstrBot Dashboard and click 「Emoji Manager
 
 - **Browse**: Filter by category, search, and sort collected emojis.
 - **Scope Management**: `public` for shared library, `local` for origin-group-only sending.
-- **Batch Operations**: Move categories, delete, and set scopes in batch.
+- **Batch Operations**: Move categories, delete, set scopes, and repair origin targets in batch.
 - **Single Upload**: Upload an image and use AI to auto-detect category and scene tags.
 - **Batch Import**: Upload multiple emojis at once. **Category selection** and **Auto-analysis** are mutually exclusive:
   - **Select Category**: Saves images to the specified category without calling VLM.
   - **Auto-analysis**: VLM automatically identifies each image's category (high concurrent API calls).
+- **Storage Maintenance**: Scan and clean stale index rows, orphan files, thumbnail cache, and temporary files.
 - **Category Management**: Add, edit, and delete emoji categories.
 
 > ⚠️ **High Concurrency Warning**: Auto-analysis processes multiple images concurrently and may trigger API rate limits. Batch your imports accordingly.
@@ -117,12 +123,15 @@ All settings can be modified in the AstrBot admin panel.
 | **Steal probability** | `0.3` | Chance of stealing each received image (probability mode) |
 | **Steal cooldown (seconds)** | `30` | Minimum interval between two steals (cooldown mode) |
 | **Content filtration** | `false` | Filter inappropriate images; may increase processing time |
+| **Allow import on audit service errors** | `false` | Policy hint for audit-service failures; explicitly rejected unsafe images still won't be imported |
 
 ### Sending Settings
 
 | Setting | Default | Description |
 |:---|:---|:---|
 | **Auto-send emojis** | `false` | Auto-send emojis during conversation |
+| **Auto-send intent gate** | `true` | Skip commands, serious/error replies, very short replies, and question-heavy messages |
+| **Cancel pending auto-send on new message** | `true` | Cancel the previous delayed auto-send when a new message arrives in the same session |
 | **Emoji send probability** | `0.2` | Probability of auto-sending (0.0 ~ 1.0) |
 | **Send as GIF** | `false` | Send as GIF (closer to native emoji style, slightly higher memory) |
 | **Send delay (seconds)** | `5.0` | Delay before sending to avoid conflicts with message segmentation plugins. Set to 0 for immediate. |
@@ -160,6 +169,7 @@ All settings can be modified in the AstrBot admin panel.
 | Setting | Default | Description |
 |:---|:---|:---|
 | **Max emoji count** | `100` | Storage limit; oldest emojis are cleaned when exceeded |
+| **Storage cleanup strategy** | `balanced` | `conservative` cleans stale index/temp files; `balanced` also cleans orphan files and thumbnails; `aggressive` also cleans raw files |
 | **VLM classification prompt** | `""` | Custom prompt for VLM emotion classification |
 | **VLM classification prompt (with filtration)** | `""` | Prompt used when content filtration is enabled |
 
@@ -212,8 +222,8 @@ All commands use the `/meme` prefix.
 
 | Tool | Description |
 |:---|:---|
-| `search_emoji` | LLM searches for matching emoji candidates |
-| `send_emoji_by_id` | LLM selects and sends an emoji from the candidate list |
+| `search_emoji` | LLM searches for matching emoji candidates with category, scene, scope, and usage hints |
+| `send_emoji_by_id` | LLM selects and sends an emoji from the candidate list; failures include explicit reason codes |
 
 ## ⚠️ Notes
 

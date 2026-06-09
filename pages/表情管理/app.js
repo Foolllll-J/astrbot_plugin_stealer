@@ -198,6 +198,12 @@ const TEMPLATE = /* html */ `
                                 </svg>
                                 批量导入
                             </button>
+                            <button @click="runStorageCleanup" class="codex-btn">
+                                <svg style="width:16px;height:16px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 6h18M8 6V4h8v2m-6 4v7m4-7v7M6 6l1 14h10l1-14"/>
+                                </svg>
+                                存储清理
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -850,6 +856,7 @@ const TEMPLATE = /* html */ `
             <button @click="openBatchMoveModal" class="codex-btn" style="font-size:0.8rem;padding:8px 16px">移动</button>
             <button @click="handleBatchDelete" class="codex-btn danger" style="font-size:0.8rem;padding:8px 16px">删除</button>
             <button @click="openBatchScopeModal" class="codex-btn" style="font-size:0.8rem;padding:8px 16px">作用域</button>
+            <button @click="repairSelectedScope" class="codex-btn" style="font-size:0.8rem;padding:8px 16px">修复来源</button>
             <button @click="batchSetFavorite(true)" class="codex-btn" style="font-size:0.8rem;padding:8px 16px">
               <svg style="width:14px;height:14px" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
@@ -881,6 +888,22 @@ const TEMPLATE = /* html */ `
                     <div style="display:flex;gap:12px">
                         <button @click="onConfirmNo" class="codex-btn" style="flex:1">取消</button>
                         <button @click="onConfirmYes" class="codex-btn danger" style="flex:1">确认</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div v-if="promptOpen" class="modal-overlay" @click.self="onPromptCancel">
+            <div class="modal-panel" style="max-width:420px">
+                <div class="modal-header">
+                    <h2>输入信息</h2>
+                </div>
+                <div style="padding:24px">
+                    <p style="margin:0 0 16px;color:var(--text-main);font-size:1rem">{{ promptMessage }}</p>
+                    <input v-model="promptValue" type="text" class="codex-input" @keyup.enter="onPromptOk">
+                    <div style="display:flex;gap:12px;margin-top:20px">
+                        <button @click="onPromptCancel" class="codex-btn" style="flex:1">取消</button>
+                        <button @click="onPromptOk" class="codex-btn primary" style="flex:1">确认</button>
                     </div>
                 </div>
             </div>
@@ -960,6 +983,27 @@ createApp({
         });
         const onConfirmYes = () => { confirmOpen.value = false; confirmResolve?.(true); };
         const onConfirmNo = () => { confirmOpen.value = false; confirmResolve?.(false); };
+
+        const promptOpen = ref(false);
+        const promptMessage = ref('');
+        const promptValue = ref('');
+        let promptResolve = null;
+        const showPrompt = (msg, initialValue = '') => new Promise((resolve) => {
+            promptMessage.value = msg;
+            promptValue.value = initialValue;
+            promptOpen.value = true;
+            promptResolve = resolve;
+        });
+        const onPromptOk = () => {
+            promptOpen.value = false;
+            promptResolve?.(promptValue.value);
+            promptResolve = null;
+        };
+        const onPromptCancel = () => {
+            promptOpen.value = false;
+            promptResolve?.(null);
+            promptResolve = null;
+        };
 
         // Toast notification (sandbox blocks native alert)
         const toastOpen = ref(false);
@@ -1576,6 +1620,72 @@ body: JSON.stringify({ hashes: Array.from(selectedImages.value), favorite }),
             } catch (e) { showAlert('批量操作失败: ' + e.message); }
         };
 
+        const runStorageCleanup = async () => {
+            try {
+                const scanRes = await apiFetch('api/storage/scan');
+                const scan = await scanRes.json();
+                if (!scan.success) {
+                    showAlert(scan.error || '存储扫描失败');
+                    return;
+                }
+                const totalCount =
+                    Number(scan.stale_index?.count || 0) +
+                    Number(scan.orphan_files?.count || 0) +
+                    Number(scan.thumb_cache?.count || 0) +
+                    Number(scan.temp_files?.count || 0);
+                if (totalCount <= 0) {
+                    showAlert('没有发现需要清理的存储项');
+                    return;
+                }
+                const ok = await showConfirm(`发现 ${totalCount} 个可清理项。将清理失效索引、孤儿文件、缩略图缓存和临时文件，是否继续？`);
+                if (!ok) return;
+                const cleanRes = await apiFetch('api/storage/cleanup', {
+                    method: 'POST',
+                    body: JSON.stringify({ strategy: 'balanced' }),
+                });
+                const clean = await cleanRes.json();
+                if (!clean.success) {
+                    showAlert(clean.error || '存储清理失败');
+                    return;
+                }
+                const removed = clean.removed || {};
+                const removedCount = Object.values(removed).reduce((sum, value) => sum + Number(value || 0), 0);
+                await fetchImages(currentPage.value);
+                await fetchStats();
+                showAlert(`存储清理完成，已处理 ${removedCount} 项`);
+            } catch (e) {
+                showAlert('存储清理失败: ' + e.message);
+            }
+        };
+
+        const repairSelectedScope = async () => {
+            if (selectedImages.value.size === 0) return;
+            const originTarget = await showPrompt('请输入来源作用域，例如 group:123456 或 user:123456');
+            if (!originTarget || !originTarget.trim()) return;
+            try {
+                const res = await apiFetch('api/images/scope-repair', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        hashes: Array.from(selectedImages.value),
+                        origin_target: originTarget.trim(),
+                        scope_mode: 'local',
+                        only_missing: false,
+                    }),
+                });
+                const data = await res.json();
+                if (data.success) {
+                    selectedImages.value = new Set();
+                    isBatchMode.value = false;
+                    await fetchImages(currentPage.value);
+                    showAlert(`已修复 ${data.count || 0} 张图片的来源作用域`);
+                } else {
+                    showAlert(data.error || '来源修复失败');
+                }
+            } catch (e) {
+                showAlert('来源修复失败: ' + e.message);
+            }
+        };
+
         const openUploadModal = () => {
             uploadOpen.value = true;
             uploadFile.value = null;
@@ -1737,6 +1847,10 @@ body: JSON.stringify({ hashes: Array.from(selectedImages.value), favorite }),
                     body: JSON.stringify({
                         base64: base64Data,
                         filename: uploadFile.value.name,
+                        category: uploadForm.emotion,
+                        tags: uploadForm.tags,
+                        scene: uploadForm.scene,
+                        desc: uploadForm.desc,
                     }),
                 });
                 const uploadData = await uploadRes.json();
@@ -1744,16 +1858,6 @@ body: JSON.stringify({ hashes: Array.from(selectedImages.value), favorite }),
                     uploadError.value = uploadData.error || '上传失败';
                     return;
                 }
-                await apiFetch('api/images/update', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        hash: uploadData.hash,
-                        category: uploadForm.emotion,
-                        tags: uploadForm.tags,
-                        scene: uploadForm.scene,
-                        desc: uploadForm.desc,
-                    }),
-                });
                 closeUploadModal();
                 fetchImages(1);
                 fetchStats();
@@ -2036,6 +2140,7 @@ body: JSON.stringify({ key: cat.key }),
             toggleBatchMode,
             toggleSelection,
             selectAll,
+            runStorageCleanup,
             handleBatchDelete,
             openBatchMoveModal,
             closeBatchMoveModal,
@@ -2043,6 +2148,7 @@ body: JSON.stringify({ key: cat.key }),
             openBatchScopeModal,
             closeBatchScopeModal,
             confirmBatchScope,
+            repairSelectedScope,
 
             uploadOpen,
             uploading,
@@ -2120,6 +2226,11 @@ body: JSON.stringify({ key: cat.key }),
             confirmMessage,
             onConfirmYes,
             onConfirmNo,
+            promptOpen,
+            promptMessage,
+            promptValue,
+            onPromptOk,
+            onPromptCancel,
             toastOpen,
             toastMessage,
         };

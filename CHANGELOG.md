@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.9] - 2026-06-09
+
+### added
+- WebUI 新增存储扫描与清理入口，可清理失效索引、孤儿文件、缩略图缓存和临时文件
+- WebUI 新增批量作用域来源修复工具，便于为缺失 `origin_target` 的表情补齐来源并设为 `local`
+- 新增自动表情意图门控配置，跳过命令、严肃错误回复、过短回复和连续提问等不适合自动发图的场景
+- 新增同会话新消息取消待发送自动表情配置，避免延迟发送打断新的对话节奏
+
+### improved
+- 基于 PR #69（清理自动表情标签后再过发送门控）和 PR #70（WebUI 单张上传 base64 JSON 兼容）同步后的代码继续做稳定性增强
+- 单张 WebUI 上传改为原子化写入图片和元数据，分类、标签、描述、场景与作用域不再依赖二次更新
+- LLM 工具搜索结果补充作用域、使用次数等选择参考，发送失败时返回明确 reason 便于重新选择
+- LLM 主动偷图增加轻量图片预检，提前拦截无效扩展名、空文件、超大文件和损坏图片
+- 批量上传任务增加 TTL 与更新时间，自动分析临时文件改为 `finally` 清理
+
+### docs
+- README/README_EN 增加双语言切换 badge，并同步说明新增 WebUI、配置和 LLM 工具行为
+- metadata 描述与版本更新至 `2.6.9`
+
 ## [2.6.8] - 2026-06-07
 
 ### fix

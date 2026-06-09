@@ -1059,15 +1059,20 @@ class Main(Star):
         text = result.get_plain_text() or ""
         if not text.strip():
             return False
-        turn_allowed = await self._resolve_auto_emoji_turn_permission(event)
         explicit_emojis = []
         text_without_explicit = re.sub(
             r"\[ast_emoji:(.*?)\]", lambda m: explicit_emojis.append(m.group(1)) or "", text
         )
-        if explicit_emojis:
-            _, cleaned_text = await self._extract_emotions_from_text(event, text_without_explicit)
+
+        emotions = []
+        cleaned_text = text_without_explicit
+        if not self.enable_natural_emotion_analysis:
+            emotions, cleaned_text = await self._extract_emotions_from_text(event, text_without_explicit)
             if cleaned_text != text:
                 self._update_result_with_cleaned_text_safe(event, result, cleaned_text)
+
+        turn_allowed = await self._resolve_auto_emoji_turn_permission(event)
+        if explicit_emojis:
             if not turn_allowed:
                 return cleaned_text != text
             if not self._claim_auto_emoji_turn(event):
@@ -1079,21 +1084,14 @@ class Main(Star):
                 return True
             return cleaned_text != text
         if not turn_allowed:
-            return False
+            return cleaned_text != text
         if self._should_skip_auto_emoji_by_gate(text_without_explicit):
-            return False
-
-        emotions = []
-        cleaned_text = text_without_explicit
-        if not self.enable_natural_emotion_analysis:
-            emotions, cleaned_text = await self._extract_emotions_from_text(event, text_without_explicit)
-            if cleaned_text != text:
-                self._update_result_with_cleaned_text_safe(event, result, cleaned_text)
-            if not emotions:
-                return cleaned_text != text
+            return cleaned_text != text
+        if not self.enable_natural_emotion_analysis and not emotions:
+            return cleaned_text != text
 
         if not self._claim_auto_emoji_turn(event):
-            return False
+            return cleaned_text != text
         user_query = ""
         try:
             user_query = event.get_message_str() or ""

@@ -177,13 +177,14 @@ class VLMCallService:
             MAX_FRAMES = 12  # 最多提取 12 帧
             TARGET_HEIGHT = 480  # 输出高度（提高以保留小字可读性）
             SIMILARITY_THRESHOLD = 1000.0  # 相似帧过滤阈值 (MSE)
+            MAX_VLM_DIMENSION = 2048  # VLM 模型最大输入边长
 
             # 计算缩放比例
             scale = TARGET_HEIGHT / height if height > TARGET_HEIGHT else 1.0
             frame_width = int(width * scale)
             frame_height = TARGET_HEIGHT
 
-            def _extract_and_combine(fp: str) -> tuple[str, int]:
+            def _extract_and_combine(fp: str) -> tuple[str, int, int, int]:
                 frames = []
                 last_selected_np = None
 
@@ -233,6 +234,20 @@ class VLMCallService:
                 for i, frame in enumerate(frames):
                     combined.paste(frame, (i * frame_width, 0), frame)  # 使用帧的 alpha 通道
 
+                # 如果拼接图超出 VLM 输入限制，等比缩放到限制内
+                if total_width > MAX_VLM_DIMENSION or frame_height > MAX_VLM_DIMENSION:
+                    scale_factor = min(
+                        MAX_VLM_DIMENSION / total_width,
+                        MAX_VLM_DIMENSION / frame_height,
+                    )
+                    new_w = max(1, int(total_width * scale_factor))
+                    new_h = max(1, int(frame_height * scale_factor))
+                    combined = combined.resize((new_w, new_h), PILImage.LANCZOS)
+                    logger.debug(
+                        f"GIF 拼接图超出 VLM 限制({total_width}x{frame_height})，"
+                        f"已缩放至 {new_w}x{new_h}"
+                    )
+
                 # 保存临时文件
                 import tempfile
 
@@ -241,12 +256,15 @@ class VLMCallService:
                 # 使用无损 PNG，避免 JPEG 压缩导致小字发糊。
                 combined.save(temp_path, "PNG", optimize=True)
 
-                return temp_path, len(frames)
+                final_w, final_h = combined.size
+                return temp_path, len(frames), final_w, final_h
 
-            temp_path, actual_frames = await asyncio.to_thread(_extract_and_combine, img_path)
+            temp_path, actual_frames, final_width, final_height = await asyncio.to_thread(
+                _extract_and_combine, img_path
+            )
             logger.debug(
                 f"GIF 动图拼接完成: {n_frames} 帧 -> {actual_frames} 帧, "
-                f"输出尺寸: {frame_width * actual_frames}x{frame_height}"
+                f"输出尺寸: {final_width}x{final_height}"
             )
             return temp_path, True
 

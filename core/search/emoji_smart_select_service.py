@@ -7,7 +7,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
-from .text_similarity import calculate_hybrid_similarity, tokenize_for_bm25, _extract_words
+from .text_similarity import calculate_hybrid_similarity, calculate_simple_similarity, tokenize_for_bm25, _extract_words
 
 
 class EmojiSmartSelectService:
@@ -97,8 +97,9 @@ class EmojiSmartSelectService:
                     prefiltered_entries = lexical_matches[: self.SMART_FAST_PREFILTER_TOP_K]
 
                     if fuzzy_only_matches:
+                        # 使用更轻量的相似度算法做模糊候选初筛
                         fuzzy_only_matches.sort(
-                            key=lambda item: calculate_hybrid_similarity(
+                            key=lambda item: calculate_simple_similarity(
                                 context_text,
                                 " ".join(
                                     [
@@ -118,6 +119,10 @@ class EmojiSmartSelectService:
                     prefiltered_entries = scoped_entries
             else:
                 prefiltered_entries = scoped_entries
+
+            # 智能选择时若已积累足够高分候选，可提前终止打分
+            SMART_EARLY_STOP_COUNT = 5
+            SMART_EARLY_STOP_THRESHOLD = 0.7
 
             for file_path, data, entry_category, tags, scenes, _, fast_score in prefiltered_entries:
                 desc, tag_words, scene_words, _, _ = self._prepare_entry_text_features(
@@ -196,6 +201,11 @@ class EmojiSmartSelectService:
                             entry_category,
                         )
                     )
+
+                # 提前终止：若已有足够高分候选，跳过剩余低相关条目
+                high_quality = [c for c in candidates if c[1] >= SMART_EARLY_STOP_THRESHOLD]
+                if len(high_quality) >= SMART_EARLY_STOP_COUNT:
+                    break
 
             if not candidates:
                 candidates = low_score_candidates

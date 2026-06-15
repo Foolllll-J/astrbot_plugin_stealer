@@ -64,7 +64,7 @@ Done stealing?
 
 ### 4. WebUI Management
 
-Open the plugin detail panel in the AstrBot Dashboard and click 「Emoji Manager」 to access the management page.
+Open the plugin detail panel in the AstrBot Dashboard and click "Emoji Manager" to access the management page.
 
 - **Browse**: Filter by category, search, and sort collected emojis.
 - **Scope Management**: `public` for shared library, `local` for origin-group-only sending.
@@ -175,7 +175,7 @@ All settings can be modified in the AstrBot admin panel.
 
 ### WebUI
 
-The management page is served through the AstrBot Dashboard plugin page system. Click 「Emoji Manager」 in the plugin detail panel to access it. No additional port or password configuration is needed.
+The management page is served through the AstrBot Dashboard plugin page system. Click "Emoji Manager" in the plugin detail panel to access it. No additional port or password configuration is needed.
 
 ## 🔄 Emotion Analysis Modes
 

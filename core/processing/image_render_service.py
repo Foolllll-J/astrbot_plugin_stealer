@@ -75,28 +75,14 @@ class ImageRenderService:
             if PILImage is None:
                 return await self.file_to_base64(file_path)
 
-            # GIF 转换限制常量
+            # GIF 转换限制常量：不改尺寸不改 optimize
             MAX_FRAMES = 30
-            MAX_DIMENSION = 2048
 
             def _sync_convert_to_gif(fp: str) -> str:
                 with PILImage.open(fp) as im:
                     buf = BytesIO()
                     is_animated = bool(getattr(im, "is_animated", False))
                     n_frames = int(getattr(im, "n_frames", 1) or 1)
-
-                    # 检查图片尺寸
-                    width, height = im.size
-                    scale = 1.0
-                    if width > MAX_DIMENSION or height > MAX_DIMENSION:
-                        scale = min(MAX_DIMENSION / width, MAX_DIMENSION / height)
-                        new_width = int(width * scale)
-                        new_height = int(height * scale)
-                        logger.debug(
-                            f"GIF 图片尺寸过大 ({width}x{height}), 缩放至 {new_width}x{new_height}"
-                        )
-                    else:
-                        new_width, new_height = width, height
 
                     if is_animated and n_frames > 1:
                         actual_frames = min(n_frames, MAX_FRAMES)
@@ -108,10 +94,7 @@ class ImageRenderService:
                                 break
                             im.seek(frame_idx)
                             frame = im.convert("RGBA")
-                            if scale != 1.0:
-                                frame = frame.resize((new_width, new_height), PILImage.LANCZOS)
-                            else:
-                                frame = frame.resize((new_width, new_height), PILImage.BILINEAR)
+                            # 保留帧原始尺寸，避免二次缩放
                             frames.append(frame)
                             durations.append(im.info.get("duration", 100))
 
@@ -123,13 +106,12 @@ class ImageRenderService:
                                 append_images=frames[1:],
                                 duration=durations,
                                 loop=0,
-                                optimize=True,
+                                optimize=False,
                                 disposal=2,
                             )
                     else:
-                        if scale != 1.0:
-                            im = im.resize((new_width, new_height), PILImage.LANCZOS)
-                        im.save(buf, format="GIF", optimize=True)
+                        # 保留原图尺寸，禁用 optimize，避免二次压缩
+                        im.save(buf, format="GIF", optimize=False)
 
                     result = base64.b64encode(buf.getvalue()).decode("utf-8")
                     self._gif_base64_cache[cache_key] = (time.time(), result)

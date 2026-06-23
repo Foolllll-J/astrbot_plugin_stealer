@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.14] - 2026-06-24
+
+### fixed
+- 修复后台批量导入表情后 BM25 索引表不更新的问题。所有写入路径（批量导入、单张上传、删除、更新、移动、偷图、容量控制）现在都会调用 `_invalidate_bm25_index()` 使 BM25 失效，下一次搜索时自动重建
+- 修复搜索热路径的安全网：即使某条写入路径遗漏了 BM25 失效调用，搜索时也会对比语料签名，发现不一致则强制重建
+- 修复重启插件后把用户已删除的预定义类别重新加回的问题。`_auto_merge_existing_categories` 现在以用户的 `categories.json` 为合并基线，仅自动发现自定义类别，已删除的预定义类别即使磁盘有残留文件也不会复活
+- 修复储存清理中路径大小写/分隔符不匹配导致全部有效表情被误判为孤儿文件而删除的问题（Windows NTFS）。新增 `_norm_path_key()` 归一化比较，`stale_index` 检测改用 `Path().resolve().is_file()` 规范判断
+- 修复储存清理中 `stale_index` 只删索引条目不删物理文件的边界问题——回滚了误加的 `_safe_remove_file` 循环，`stale_index` 设计语义就是"文件已丢失、只清索引"，绝不删文件
+
+### changed
+- `send_emoji_as_gif` 发送路径不再对图片做二次压缩：取消 PIL GIF 重编码中的 `optimize=True` 与 2048 尺寸缩放限制，保留原始帧数据与尺寸
+- blacklist 从 `cache/blacklist_cache.json` 迁移到数据库 `blacklist` 表（SCHEMA_VERSION 2→3）。新增 `blacklisted_hashes` / `add_blacklist` / `remove_blacklist` / `add_blacklist_batch` CRUD 方法。插件启动时自动从旧 JSON 缓存迁移数据，迁移后黑名单读写以 DB 为准
+- 初始化时自动清理遗留的迁移残渣文件（`.backup`/`.migrated`/`categories/*/index.json`/`cache/index_cache.json`/`index.json`/`image_index.json`），仅当 DB 已有数据时执行，保留活跃缓存与配置文件
+
 ## [2.6.13] - 2026-06-18
 
 ### fixed

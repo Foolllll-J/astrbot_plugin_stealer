@@ -14,6 +14,23 @@ class ImageManagementCommand:
     def __init__(self, plugin_instance: Any) -> None:
         self.plugin = plugin_instance
 
+    async def _add_blacklist_hash(self, image_hash: str) -> bool:
+        if not image_hash:
+            return False
+        try:
+            db = getattr(self.plugin, "db_service", None)
+            if db is not None and hasattr(db, "add_blacklist"):
+                await db.add_blacklist(image_hash, int(time.time()))
+                return True
+            if getattr(self.plugin, "cache_service", None):
+                await self.plugin.cache_service.set(
+                    "blacklist_cache", image_hash, int(time.time()), persist=True
+                )
+                return True
+        except Exception as e:
+            logger.error(f"写入黑名单失败: {e}", exc_info=True)
+        return False
+
     async def list_images(
         self,
         event: AstrMessageEvent,
@@ -303,12 +320,20 @@ class ImageManagementCommand:
             )
             return
 
+        target_hash = str(target_image.get("hash", "") or "").strip()
+        if not target_hash:
+            yield event.plain_result(f"❌ 拉黑失败: {target_image['name']} 缺少 hash")
+            return
+
+        if not await self._add_blacklist_hash(target_hash):
+            yield event.plain_result(f"❌ 拉黑失败: {target_image['name']} 无法写入黑名单")
+            return
+
         success = await self._delete_image_files(target_image["path"])
         if not success:
             yield event.plain_result(f"❌ 拉黑失败: {target_image['name']}")
             return
 
-        target_hash = str(target_image.get("hash", "") or "").strip()
         for path, meta in list(image_index.items()):
             if path == target_image["path"] or (
                 target_hash and isinstance(meta, dict) and meta.get("hash") == target_hash
@@ -316,12 +341,7 @@ class ImageManagementCommand:
                 del image_index[path]
         await self.plugin._save_index(image_index)
 
-        image_hash = target_hash
-        if image_hash and getattr(self.plugin, "cache_service", None):
-            await self.plugin.cache_service.set(
-                "blacklist_cache", image_hash, int(time.time()), persist=True
-            )
-            logger.info(f"已加入黑名单: {image_hash}")
+        logger.info(f"已加入黑名单: {target_hash}")
 
         yield event.plain_result(
             f"✅ 已拉黑表情包:\n"

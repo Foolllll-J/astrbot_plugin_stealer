@@ -510,7 +510,11 @@ class ImageProcessorService:
                         return True
 
             # 3) 黑名单检查
-            blacklist = self.plugin.cache_service.get_cache("blacklist_cache")
+            db = getattr(self.plugin, "db_service", None)
+            if db is not None and hasattr(db, "blacklisted_hashes"):
+                blacklist = db.blacklisted_hashes()
+            else:
+                blacklist = self.plugin.cache_service.get_cache("blacklist_cache")
             if blacklist and hash_val in blacklist:
                 logger.debug(f"[去重] 图片在黑名单中: {hash_val[:16]}...")
                 await _cleanup_temp()

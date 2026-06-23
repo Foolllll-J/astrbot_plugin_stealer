@@ -145,17 +145,46 @@ class PluginAPI:
                 "index_cache", db.get_index_cache_readonly(), persist=False
             )
 
+    def _invalidate_bm25(self) -> None:
+        """写入操作后使 BM25 索引失效，下次搜索时强制重建。
+        防止批量导入/删除/更新后 BM25 仍使用旧语料，导致新表情无法被检索到。
+        """
+        try:
+            selector = getattr(self.plugin, "emoji_selector", None)
+            if selector is not None:
+                selector._invalidate_bm25_index()
+        except Exception as e:
+            logger.debug(f"[BM25] 失效索引失败: {e}")
+
+    async def _add_blacklist_hash(self, image_hash: str) -> bool:
+        if not image_hash:
+            return False
+        try:
+            db = self._db
+            if db and hasattr(db, "add_blacklist"):
+                await db.add_blacklist(image_hash, int(time.time()))
+                return True
+            await self._cache.set(
+                "blacklist_cache", image_hash, int(time.time()), persist=True
+            )
+            return True
+        except Exception as e:
+            logger.error(f"写入黑名单失败: {e}", exc_info=True)
+            return False
+
     async def _delete_index_paths(self, paths: list[str]) -> None:
         db = self._db
         if db and hasattr(db, "delete_paths"):
             await db.delete_paths(paths)
             await self._refresh_index_cache_from_db()
+            self._invalidate_bm25()
             return
         index = self._build_full_index_snapshot()
         for path in paths:
             index.pop(path, None)
         await self._cache.set_cache("index_cache", index, persist=False)
         await self._sync_index()
+        self._invalidate_bm25()
 
     async def _update_index_path(self, path: str, updates: dict[str, Any]) -> bool:
         db = self._db
@@ -163,6 +192,7 @@ class PluginAPI:
             ok = await db.update_path(path, updates)
             if ok:
                 await self._refresh_index_cache_from_db()
+                self._invalidate_bm25()
             return ok
 
         index = self._build_full_index_snapshot()
@@ -173,6 +203,7 @@ class PluginAPI:
         index[path] = meta
         await self._cache.set_cache("index_cache", index, persist=False)
         await self._sync_index()
+        self._invalidate_bm25()
         return True
 
     async def _move_index_path(
@@ -187,6 +218,7 @@ class PluginAPI:
             ok = await db.move_path(old_path, new_path, category, updates or {})
             if ok:
                 await self._refresh_index_cache_from_db()
+                self._invalidate_bm25()
             return ok
 
         index = self._build_full_index_snapshot()
@@ -200,6 +232,7 @@ class PluginAPI:
         index[new_path] = meta
         await self._cache.set_cache("index_cache", index, persist=False)
         await self._sync_index()
+        self._invalidate_bm25()
         return True
 
     @staticmethod
@@ -316,6 +349,17 @@ class PluginAPI:
             return False
 
     @staticmethod
+    def _norm_path_key(path) -> str:
+        """归一化路径用于比较：统一分隔符并忽略大小写（Windows）。
+        避免存储路径与磁盘遍历路径的大小写/分隔符差异，导致有效表情被
+        误判为过期索引或孤儿文件，进而错删索引或清空自定义类别。
+        """
+        try:
+            return os.path.normcase(os.path.normpath(str(path)))
+        except Exception:
+            return os.path.normcase(str(path))
+
+    @staticmethod
     def _file_stat(path: Path) -> dict[str, Any]:
         try:
             stat = path.stat()
@@ -340,18 +384,29 @@ class PluginAPI:
 
     def _build_storage_report(self, *, include_items: bool = False) -> dict[str, Any]:
         index = self._build_full_index_snapshot()
-        indexed_paths = {str(Path(path)) for path in index.keys() if isinstance(path, str)}
-        stale_index = [
-            self._file_stat(Path(path))
-            for path in indexed_paths
-            if not Path(path).is_file()
-        ]
+        indexed_paths = {
+            self._norm_path_key(path)
+            for path in index.keys()
+            if isinstance(path, str)
+        }
+        stale_index = []
+        for path in index.keys():
+            if not isinstance(path, str):
+                continue
+            # 用 resolve() 规范化后再判断文件是否存在，避免因路径前缀/分隔符
+            # 差异把真实存在的文件误判为过期索引（否则会删了索引却留下文件）。
+            try:
+                file_exists = Path(path).resolve().is_file()
+            except Exception:
+                file_exists = Path(path).is_file()
+            if not file_exists:
+                stale_index.append(self._file_stat(Path(path)))
 
         category_files = self._iter_files(self._data_dir / "categories", allowed_exts_only=True)
         orphan_files = [
             self._file_stat(path)
             for path in category_files
-            if str(path) not in indexed_paths
+            if self._norm_path_key(path) not in indexed_paths
         ]
 
         thumb_files = [self._file_stat(path) for path in self._iter_files(self._data_dir / "thumb_cache")]
@@ -496,10 +551,12 @@ class PluginAPI:
                 finally:
                     raise RuntimeError("insert image metadata failed")
             await self._refresh_index_cache_from_db()
+            self._invalidate_bm25()
         else:
             index = self._build_full_index_snapshot()
             index[str(file_path)] = data
             await self._cache.set_cache("index_cache", index, persist=False)
+            self._invalidate_bm25()
         return {"hash": img_hash, "category": final_cat}
 
     # ── Image serving ─────────────────────────────────────────
@@ -829,6 +886,8 @@ class PluginAPI:
                     removed.append(p)
 
             if removed:
+                if blacklist and not await self._add_blacklist_hash(img_hash):
+                    return jsonify({"success": False, "error": "write blacklist failed"})
                 deleted_paths: list[str] = []
                 for target in removed:
                     try:
@@ -839,10 +898,6 @@ class PluginAPI:
                 if not deleted_paths:
                     return jsonify({"success": False, "error": "delete file failed"})
                 await self._delete_index_paths(deleted_paths)
-                if blacklist:
-                    await self._cache.set(
-                        "blacklist_cache", img_hash, int(time.time()), persist=True
-                    )
                 if hasattr(self.plugin, "image_processor_service"):
                     self.plugin.image_processor_service.invalidate_cache(img_hash)
                 return jsonify({"success": True, "count": len(deleted_paths)})
@@ -1211,9 +1266,18 @@ class PluginAPI:
             removed: dict[str, int] = {}
             if "stale_index" in sections:
                 index = self._build_full_index_snapshot()
-                stale_paths = [
-                    path for path in index.keys() if isinstance(path, str) and not Path(path).is_file()
-                ]
+                stale_paths: list[str] = []
+                for path in index.keys():
+                    if not isinstance(path, str):
+                        continue
+                    # stale_index 语义：物理文件已丢失但索引条目仍存在。
+                    # 只删索引条目，绝不删文件——文件已经不在了。
+                    try:
+                        file_exists = Path(path).resolve().is_file()
+                    except Exception:
+                        file_exists = Path(path).is_file()
+                    if not file_exists:
+                        stale_paths.append(path)
                 if stale_paths:
                     await self._delete_index_paths(stale_paths)
                 removed["stale_index"] = len(stale_paths)

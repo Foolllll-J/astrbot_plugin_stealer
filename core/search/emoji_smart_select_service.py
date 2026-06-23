@@ -266,7 +266,23 @@ class EmojiSmartSelectService:
     ) -> list[tuple[str, str, str, str]]:
         """根据查询词搜索图片（BM25 检索）。"""
         try:
-            if self._search_engine._bm25_dirty or self._search_engine._bm25_index is None:
+            # 安全网：即便写入路径遗漏了 _invalidate_bm25_index，
+            # 也会在签名与当前语料不一致时强制重建，避免使用过期的 BM25 索引。
+            need_rebuild = (
+                self._search_engine._bm25_dirty
+                or self._search_engine._bm25_index is None
+            )
+            if not need_rebuild:
+                try:
+                    current_sig = self._search_engine._compute_bm25_signature(
+                        idx if idx is not None else self._selector._get_index(),
+                        prefer_db_signature=True,
+                    )
+                    if current_sig and current_sig != self._search_engine._bm25_signature:
+                        need_rebuild = True
+                except Exception:
+                    pass
+            if need_rebuild:
                 await self._search_engine._build_bm25_index(idx)
 
             if self._search_engine._bm25_index is None or not self._search_engine._bm25_doc_paths:

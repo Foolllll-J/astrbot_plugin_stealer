@@ -25,7 +25,7 @@ class DatabaseService:
     _RELATED_FETCH_CHUNK_SIZE = 400
 
     # 表结构版本，用于迁移检测
-    SCHEMA_VERSION = 2
+    SCHEMA_VERSION = 3
 
     def __init__(self, db_path: str | Path | None = None):
         """初始化数据库服务。
@@ -113,6 +113,10 @@ class DatabaseService:
                     (str(self.SCHEMA_VERSION),),
                 )
 
+                # v3: blacklist table created by _create_tables
+                if current_version < 3:
+                    logger.info("[DB] migration: blacklist table ready")
+
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """创建所有数据表。"""
         # 主表：表情包元数据
@@ -153,7 +157,13 @@ class DatabaseService:
             )
         """)
 
-        # 创建索引加速搜索
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS blacklist (
+                hash TEXT PRIMARY KEY,
+                created_at INTEGER DEFAULT 0
+            )
+        """)
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emoji_category ON emoji(category)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emoji_hash ON emoji(hash)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emoji_last_used ON emoji(last_used_at)")
@@ -300,6 +310,53 @@ class DatabaseService:
         with self._get_connection() as conn:
             result = conn.execute("SELECT COUNT(*) as cnt FROM emoji").fetchone()
             return result["cnt"] if result else 0
+
+    def blacklisted_hashes(self) -> set[str]:
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT hash FROM blacklist").fetchall()
+            return {r["hash"] for r in rows} if rows else set()
+
+    async def add_blacklist(self, hash_val: str, ts: int | None = None) -> None:
+        if not hash_val:
+            return
+        ts_val = ts if ts is not None else int(time.time())
+        async with self._write_lock:
+            await asyncio.to_thread(self._add_blacklist_sync, hash_val, ts_val)
+
+    def _add_blacklist_sync(self, hash_val: str, ts: int) -> None:
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO blacklist (hash, created_at) VALUES (?, ?)",
+                (hash_val, ts),
+            )
+
+    async def remove_blacklist(self, hash_val: str) -> bool:
+        if not hash_val:
+            return False
+        async with self._write_lock:
+            return await asyncio.to_thread(self._remove_blacklist_sync, hash_val)
+
+    def _remove_blacklist_sync(self, hash_val: str) -> bool:
+        with self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM blacklist WHERE hash = ?", (hash_val,))
+            return cur.rowcount > 0
+
+    async def add_blacklist_batch(self, hashes: dict[str, int]) -> int:
+        if not hashes:
+            return 0
+        async with self._write_lock:
+            return await asyncio.to_thread(self._add_blacklist_batch_sync, hashes)
+
+    def _add_blacklist_batch_sync(self, hashes: dict[str, int]) -> int:
+        inserted = 0
+        with self._get_connection() as conn:
+            for hash_val, ts in hashes.items():
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO blacklist (hash, created_at) VALUES (?, ?)",
+                    (hash_val, int(ts)),
+                )
+                inserted += cur.rowcount
+        return inserted
 
     def count_favorites(self) -> int:
         """统计收藏表情包总数。"""

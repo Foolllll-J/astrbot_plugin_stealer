@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from astrbot.api.event.filter import (
     PermissionType,
     PlatformAdapterType,
 )
+from astrbot.api.message_components import Image as MessageImage
 from astrbot.api.star import Context, Star
 from astrbot.core.agent.message import TextPart
 
@@ -171,9 +173,20 @@ class Main(Star):
             logger.info(f"已将默认提示词写入配置: {list(updates.keys())}")
 
     def _auto_merge_existing_categories(self) -> None:
-        """自动合并已存在的分类目录到配置中。"""
-        current = list(getattr(self.plugin_config, "DEFAULT_CATEGORIES", []) or [])
+        """自动合并已存在的分类目录到配置中。
+
+        注意：基于用户当前已加载的 categories（来自 categories.json）而非
+        DEFAULT_CATEGORIES 作为合并基线。这样用户主动删除的预定义类别不会
+        被重新加回，仅自动发现磁盘上用户未配置的自定义类别。
+        """
+        current = list(getattr(self, "categories", None) or [])
+        # 兼容：若 categories 尚未加载，回退到已存储配置或默认列表
+        if not current:
+            current = list(getattr(self.plugin_config, "categories", None) or [])
+        if not current:
+            current = list(getattr(self.plugin_config, "DEFAULT_CATEGORIES", []) or [])
         current_set = set(current)
+        protected = set(getattr(self.plugin_config, "DEFAULT_CATEGORIES", []) or [])
         discovered: set[str] = set()
         try:
             if self.categories_dir.exists():
@@ -207,7 +220,13 @@ class Main(Star):
                 discovered.add(cat)
         except Exception as e:
             logger.warning(f"[Config] 从索引合并分类时出错: {e}")
-        to_add = sorted(discovered - current_set)
+        to_add = sorted(
+            cat
+            for cat in (discovered - current_set)
+            # 仅自动发现「自定义」类别；用户已删除的预定义类别即使磁盘上
+            # 仍有残留文件也不会被重新加回（避免重启后复活已被删除的预定义分类）。
+            if cat not in protected
+        )
         if not to_add:
             return
         merged_categories = current + to_add
@@ -841,7 +860,9 @@ class Main(Star):
                 yield "偷取失败：内部服务未初始化"
                 return
 
-            image_ref = str(image_ref or "").strip()
+            image_ref, source = await self._resolve_steal_image_ref(
+                event, image_ref, event_handler
+            )
             if not image_ref:
                 yield "偷取失败：缺少 image_ref 参数，请提供当前消息中的图片 URL"
                 return
@@ -883,7 +904,7 @@ class Main(Star):
             # 统一走 VLM 流水线
             logger.info(f"[Tool] VLM 分析入库: {temp_path}")
             extra_meta = self._build_steal_tool_extra_meta(
-                event, image_ref, source="llm_tool"
+                event, image_ref, source=source
             )
             success, merged_idx = await self._process_image(
                 event, temp_path, is_temp=is_temp, extra_meta=extra_meta
@@ -927,6 +948,41 @@ class Main(Star):
             yield f"偷取出错：{e}"
             return
 
+    async def _resolve_steal_image_ref(
+        self,
+        event: AstrMessageEvent,
+        image_ref: str,
+        event_handler: Any,
+    ) -> tuple[str, str]:
+        """Resolve an explicit or current-message image reference for steal_sticker."""
+        explicit_ref = str(image_ref or "").strip()
+        if explicit_ref:
+            return explicit_ref, "llm_tool"
+
+        try:
+            for comp in event.get_messages():
+                if not isinstance(comp, MessageImage):
+                    continue
+                for attr in ("url", "file", "path"):
+                    value = str(getattr(comp, attr, "") or "").strip()
+                    if value:
+                        return value, "llm_tool"
+                if hasattr(comp, "convert_to_file_path"):
+                    path = await comp.convert_to_file_path()
+                    path = str(path or "").strip()
+                    if path:
+                        return path, "llm_tool"
+        except Exception:
+            pass
+
+        try:
+            store_urls = event_handler._extract_store_emoji_urls(event)
+        except Exception:
+            store_urls = []
+        if store_urls:
+            return str(store_urls[0] or "").strip(), "qq_store"
+        return "", "llm_tool"
+
     def _build_steal_tool_extra_meta(
         self,
         event: AstrMessageEvent,
@@ -952,6 +1008,10 @@ class Main(Star):
         """将当前权威索引同步到数据库与缓存。"""
         await self.db_service.sync_index(idx)
         await self.cache_service.set_cache("index_cache", idx, persist=False)
+        try:
+            self.emoji_selector._invalidate_bm25_index()
+        except Exception:
+            pass
 
     async def _rebuild_index_from_files(self) -> dict[str, Any]:
         """从文件重建基础索引（不保存到数据库，等待合并后保存）。"""
@@ -1185,6 +1245,8 @@ class Main(Star):
             except Exception as e:
                 logger.error(f"初始化提示词失败: {e}")
             await self._load_index()
+            await self._migrate_blacklist_to_db()
+            await self._clean_legacy_files()
             self._sync_all_config()
             self._sync_image_processor_from_runtime()
             self.task_scheduler.create_task("raw_cleanup_loop", self._raw_cleanup_loop())
@@ -1248,6 +1310,97 @@ class Main(Star):
         except Exception as e:
             logger.error(f"加载索引失败: {e}")
             return {}
+
+    async def _migrate_blacklist_to_db(self) -> None:
+        """将旧的 blacklist_cache.json 迁移到数据库 blacklist 表。
+
+        幂等：DB 已有同样 hash 时跳过。迁移后保留 JSON 文件直到下一次写黑名单不再写它，
+        避免在长期运行实例中破坏现有读取链路。
+        """
+        try:
+            db = getattr(self, "db_service", None)
+            if db is None or not hasattr(db, "add_blacklist_batch"):
+                return
+            cached = self.cache_service.get_cache("blacklist_cache") or {}
+            if not isinstance(cached, dict) or not cached:
+                return
+            hashes: dict[str, int] = {}
+            for h, ts in cached.items():
+                try:
+                    hashes[str(h)] = int(ts) if ts else int(time.time())
+                except Exception:
+                    hashes[str(h)] = 0
+            imported = await db.add_blacklist_batch(hashes)
+            if imported > 0:
+                logger.info(f"[DB] 黑名单从缓存迁移完成，新增 {imported} 条")
+        except Exception as e:
+            logger.warning(f"[DB] 黑名单迁移失败: {e}")
+
+    async def _clean_legacy_files(self) -> None:
+        """删除迁移残留文件：.backup / .migrated / categories/*/index.json / cache/index_cache.json 等。
+
+        仅在数据库已有数据时执行（避免误删尚未迁移的新实例的旧索引）。
+        活跃缓存文件（image_cache / bm25_cache / desc_cache 等）不会被删除。
+        """
+        try:
+            db_count = self.db_service.count_total()
+            if db_count <= 0:
+                return
+            keep_cache_names = {
+                "image_cache.json", "text_cache.json", "bm25_cache.json",
+                "desc_cache.json", "blacklist_cache.json",
+            }
+            keep_root_names = {
+                "categories.json", "category_info.json", "prompts.json",
+            }
+            deleted = 0
+
+            def _safe_unlink(p: Path) -> bool:
+                try:
+                    p.unlink()
+                    return True
+                except Exception:
+                    return False
+
+            # 1) cache_dir 下的 .backup / .migrated / index_cache.json / index.json
+            if self.cache_dir.is_dir():
+                for child in self.cache_dir.iterdir():
+                    name = child.name
+                    if name in keep_cache_names:
+                        continue
+                    if child.is_dir():
+                        continue
+                    if name.endswith(".wal") or name.endswith(".shm") or name == "emoji.db":
+                        continue
+                    if name.endswith(".backup") or name.endswith(".migrated") or name in {
+                        "index_cache.json", "index.json",
+                    }:
+                        if _safe_unlink(child):
+                            deleted += 1
+
+            # 2) categories/*/index.json
+            if self.categories_dir.is_dir():
+                for cat_dir in self.categories_dir.iterdir():
+                    if not cat_dir.is_dir():
+                        continue
+                    legacy_idx = cat_dir / "index.json"
+                    if legacy_idx.is_file():
+                        if _safe_unlink(legacy_idx):
+                            deleted += 1
+
+            # 3) base_dir 下的 index.json / image_index.json
+            for name in ("index.json", "image_index.json"):
+                if name in keep_root_names:
+                    continue
+                candidate = self.base_dir / name
+                if candidate.is_file():
+                    if _safe_unlink(candidate):
+                        deleted += 1
+
+            if deleted > 0:
+                logger.info(f"[清理] 已删除 {deleted} 个遗留文件")
+        except Exception as e:
+            logger.warning(f"[清理] 遗留文件删除失败: {e}")
 
     async def _raw_cleanup_loop(self):
         """raw目录清理循环。"""

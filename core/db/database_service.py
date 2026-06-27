@@ -25,7 +25,7 @@ class DatabaseService:
     _RELATED_FETCH_CHUNK_SIZE = 400
 
     # 表结构版本，用于迁移检测
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 4
 
     def __init__(self, db_path: str | Path | None = None):
         """初始化数据库服务。
@@ -117,6 +117,11 @@ class DatabaseService:
                 if current_version < 3:
                     logger.info("[DB] migration: blacklist table ready")
 
+                # v4: 待审核池 emoji_pending / 嵌入向量 emoji_embedding 表
+                # （均由 _create_tables 用 IF NOT EXISTS 创建，此处仅记录）
+                if current_version < 4:
+                    logger.info("[DB] migration: emoji_pending / emoji_embedding tables ready")
+
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """创建所有数据表。"""
         # 主表：表情包元数据
@@ -163,6 +168,41 @@ class DatabaseService:
                 created_at INTEGER DEFAULT 0
             )
         """)
+
+        # 待审核池：on_message 自动偷取先进 pending，人工审核通过后入库
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emoji_pending (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                path TEXT NOT NULL UNIQUE,
+                hash TEXT NOT NULL,
+                phash TEXT,
+                category TEXT,
+                desc TEXT,
+                source TEXT,
+                origin_target TEXT,
+                scope_mode TEXT DEFAULT 'public',
+                review_status TEXT DEFAULT 'pending',
+                created_at INTEGER DEFAULT 0,
+                tags_text TEXT,
+                scenes_text TEXT
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_created ON emoji_pending(created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_category ON emoji_pending(category)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_hash ON emoji_pending(hash)")
+
+        # 嵌入向量：审核通过入库时计算，检索阶段优先用向量召回，缺失则降级 BM25
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emoji_embedding (
+                path TEXT PRIMARY KEY,
+                vector BLOB NOT NULL,
+                dim INTEGER NOT NULL,
+                model_sig TEXT NOT NULL,
+                updated_at INTEGER DEFAULT 0,
+                FOREIGN KEY (path) REFERENCES emoji(path) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_embedding_model ON emoji_embedding(model_sig)")
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emoji_category ON emoji(category)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emoji_hash ON emoji(hash)")
@@ -957,6 +997,7 @@ class DatabaseService:
         "newest": "e.created_at DESC, e.path DESC",
         "oldest": "e.created_at ASC, e.path ASC",
         "most_used": "e.use_count DESC, e.last_used_at DESC, e.path ASC",
+        "last_used": "e.last_used_at DESC, e.use_count DESC, e.path ASC",
     }
 
     def get_emojis_paginated(
@@ -1083,3 +1124,224 @@ class DatabaseService:
                 images.append(item)
 
             return images, total, category_counts
+
+    # ── 待审核池 (emoji_pending) CRUD ──
+
+    @staticmethod
+    def _join_multi(values: Any) -> str:
+        return ",".join(str(v).strip() for v in DatabaseService._normalize_multi_value(values))
+
+    @staticmethod
+    def _split_multi(text: Any) -> list[str]:
+        if not text:
+            return []
+        return [s.strip() for s in str(text).split(",") if s.strip()]
+
+    def count_pending(self) -> int:
+        """统计待审核池数量（O(1) COUNT），用于偷取护栏与审核区进度条。"""
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) as cnt FROM emoji_pending").fetchone()
+            return int(row["cnt"] if row else 0)
+
+    async def insert_pending(self, meta: dict[str, Any]) -> int | None:
+        """插入一条待审核记录。
+
+        Args:
+            meta: 至少含 path/hash；可选 phash/category/desc/source/origin_target/
+                  scope_mode/tags/scenes/created_at。
+
+        Returns:
+            新插入行的 id；path 冲突(UNIQUE)返回 None。
+        """
+        if not meta or not meta.get("path"):
+            return None
+        async with self._write_lock:
+            return await asyncio.to_thread(self._insert_pending_sync, meta)
+
+    def _insert_pending_sync(self, meta: dict[str, Any]) -> int | None:
+        created_at = int(meta.get("created_at") or int(time.time()))
+        with self._get_connection() as conn:
+            try:
+                cur = conn.execute(
+                    """
+                    INSERT INTO emoji_pending
+                    (path, hash, phash, category, desc, source, origin_target,
+                     scope_mode, review_status, created_at, tags_text, scenes_text)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                    """,
+                    (
+                        meta.get("path"),
+                        meta.get("hash", ""),
+                        meta.get("phash"),
+                        meta.get("category"),
+                        meta.get("desc"),
+                        meta.get("source"),
+                        meta.get("origin_target"),
+                        meta.get("scope_mode", "public"),
+                        created_at,
+                        self._join_multi(meta.get("tags")),
+                        self._join_multi(meta.get("scenes")),
+                    ),
+                )
+                return int(cur.lastrowid) if cur.lastrowid else None
+            except sqlite3.IntegrityError:
+                # 仅作 pending 内去重：同路径已存在说明该图已在池中
+                return None
+
+    def get_pending_paginated(
+        self,
+        page: int = 1,
+        page_size: int = 50,
+        category: str | None = None,
+        search_query: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int, dict[str, int]]:
+        """分页获取待审核列表，支持分类筛选与文本搜索。固定按 created_at 降序。"""
+        where_clauses: list[str] = []
+        params: list[Any] = []
+
+        if category:
+            where_clauses.append("p.category = ?")
+            params.append(category)
+
+        if search_query:
+            search_pattern = f"%{search_query}%"
+            where_clauses.append(
+                "(p.desc LIKE ? OR p.tags_text LIKE ? OR p.scenes_text LIKE ?)"
+            )
+            params.extend([search_pattern, search_pattern, search_pattern])
+
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+        with self._get_connection() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) as cnt FROM emoji_pending p {where_sql}", params
+            ).fetchone()["cnt"]
+
+            cat_rows = conn.execute(
+                f"SELECT p.category, COUNT(*) as cnt FROM emoji_pending p {where_sql} "
+                "GROUP BY p.category",
+                params,
+            ).fetchall()
+            category_counts = {r["category"]: r["cnt"] for r in cat_rows}
+
+            offset = max(0, (page - 1)) * page_size
+            rows = conn.execute(
+                f"""
+                SELECT p.id, p.path, p.hash, p.phash, p.category, p.desc,
+                       p.source, p.origin_target, p.scope_mode, p.review_status,
+                       p.created_at, p.tags_text, p.scenes_text
+                FROM emoji_pending p {where_sql}
+                ORDER BY p.created_at DESC, p.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                params + [page_size, offset],
+            ).fetchall()
+
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                item["tags"] = self._split_multi(item.pop("tags_text", ""))
+                item["scenes"] = self._split_multi(item.pop("scenes_text", ""))
+                items.append(item)
+            return items, total, category_counts
+
+    def get_pending(self, pending_id: int) -> dict[str, Any] | None:
+        """获取单条待审核记录（含拆分后的 tags/scenes）。"""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM emoji_pending WHERE id = ?", (pending_id,)
+            ).fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            item["tags"] = self._split_multi(item.pop("tags_text", ""))
+            item["scenes"] = self._split_multi(item.pop("scenes_text", ""))
+            return item
+
+    def delete_pending(self, pending_id: int) -> dict[str, Any] | None:
+        """删除单条待审核记录，返回被删行的 path/hash（供删除磁盘文件用）；不存在返回 None。"""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT path, hash FROM emoji_pending WHERE id = ?", (pending_id,)
+            ).fetchone()
+            if not row:
+                return None
+            conn.execute("DELETE FROM emoji_pending WHERE id = ?", (pending_id,))
+            return {"path": row["path"], "hash": row["hash"]}
+
+    def delete_pending_batch(self, ids: list[int]) -> list[dict[str, Any]]:
+        """批量删除待审核记录，返回每条被删行的 {path, hash}。"""
+        clean_ids = [i for i in ids if isinstance(i, int)]
+        if not clean_ids:
+            return []
+        with self._get_connection() as conn:
+            placeholders = ",".join("?" * len(clean_ids))
+            rows = conn.execute(
+                f"SELECT id, path, hash FROM emoji_pending WHERE id IN ({placeholders})",
+                clean_ids,
+            ).fetchall()
+            conn.execute(
+                f"DELETE FROM emoji_pending WHERE id IN ({placeholders})", clean_ids
+            )
+            return [{"path": r["path"], "hash": r["hash"]} for r in rows]
+
+    # ── 嵌入向量 (emoji_embedding) CRUD ──
+
+    def upsert_embedding(
+        self,
+        path: str,
+        vector_blob: bytes,
+        dim: int,
+        model_sig: str,
+    ) -> None:
+        """写入或更新某 path 的向量。"""
+        if not path or not vector_blob:
+            return
+        now = int(time.time())
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO emoji_embedding (path, vector, dim, model_sig, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(path) DO UPDATE SET
+                    vector = excluded.vector,
+                    dim = excluded.dim,
+                    model_sig = excluded.model_sig,
+                    updated_at = excluded.updated_at
+                """,
+                (path, sqlite3.Binary(vector_blob), int(dim), model_sig, now),
+            )
+
+    def delete_embedding(self, path: str) -> None:
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM emoji_embedding WHERE path = ?", (path,))
+
+    def load_embeddings_by_sig(self, model_sig: str) -> list[dict[str, Any]]:
+        """加载某 model_sig 的所有向量行，用于构建内存索引矩阵。"""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT path, vector, dim FROM emoji_embedding WHERE model_sig = ?",
+                (model_sig,),
+            ).fetchall()
+            return [
+                {
+                    "path": r["path"],
+                    "vector": bytes(r["vector"]),
+                    "dim": int(r["dim"]),
+                }
+                for r in rows
+            ]
+
+    def count_embeddings_by_sig(self, model_sig: str) -> int:
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM emoji_embedding WHERE model_sig = ?",
+                (model_sig,),
+            ).fetchone()
+            return int(row["cnt"] if row else 0)
+
+    def get_all_embedding_paths(self) -> list[str]:
+        """所有已存向量的 path（用于对比 emoji 表，检测缺失/陈旧向量）。"""
+        with self._get_connection() as conn:
+            rows = conn.execute("SELECT path FROM emoji_embedding").fetchall()
+            return [r["path"] for r in rows]

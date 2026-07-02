@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.2] - 2026-07-02
+
+### added
+- QQ (aiocqhttp) 平台发送表情包时外显文案从 `[图片]` 改为 `[动画表情]`，模拟真实 QQ 表情包效果 (#81) — 感谢 @Foolllll-J
+
+### changed
+- WebUI 仪表盘前端重构：模板与逻辑分离（`template.js` + `app.js`），页面目录重命名为 `pages/dashboard/`
+- WebUI 主题模式改为跟随 AstrBot 框架上下文自动切换亮色/暗色，移除页面内独立主题切换按钮
+- WebUI 新增中英双语 i18n（`zh-CN` / `en-US`），页面标题、按钮、弹窗、提示、批量导入与审核区文案均接入多语言 (#82) — 感谢 @Zhalslar
+
+
 ## [2.7.1] - 2026-06-28
 
 ### added

@@ -338,7 +338,7 @@ class MemeSenderEngine:
                 return False
             return await selector.try_send_emoji(event, emotions, cleaned_text)
         except Exception as e:
-            logger.debug(f"[MemeSenderEngine] 尝试发送表情包失败: {e}")
+            logger.warning(f"[MemeSenderEngine] 尝试发送表情包失败: {e}")
             return False
 
     async def send_explicit_emojis(
@@ -390,7 +390,7 @@ class MemeSenderEngine:
         text: str,
         emotions: list[str],
         *,
-        user_query: str = "",
+        user_message: str = "",
     ):
         """异步分析并发送表情包。
 
@@ -409,7 +409,7 @@ class MemeSenderEngine:
                     event,
                     text,
                     use_natural_analysis=True,
-                    user_query=user_query,
+                    user_message=user_message,
                 )
                 if analyzed:
                     final_emotions = [analyzed]
@@ -434,7 +434,7 @@ class MemeSenderEngine:
             logger.debug("[MemeSenderEngine] 自动表情任务已取消")
             raise
         except Exception as e:
-            logger.debug(f"[MemeSenderEngine] 异步分析发送表情包失败: {e}")
+            logger.warning(f"[MemeSenderEngine] 异步分析发送表情包失败: {e}")
 
     # --- 结果处理 ---
 

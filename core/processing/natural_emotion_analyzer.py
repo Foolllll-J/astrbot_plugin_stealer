@@ -14,6 +14,32 @@ from astrbot.api.event import AstrMessageEvent
 
 from ..search.text_similarity import calculate_hybrid_similarity, _has_negation_prefix
 
+# 标记：模型明确选择不发送，用于区分"LLM 异常"和"模型说 none"
+_EMOTION_ABSTAIN = object()
+
+_EMOTION_ANALYSIS_DEFAULT_TEMPLATE = (
+    "你是对话情绪分类器。请根据对话语境判断回复的情绪，"
+    "并从下列分类中选择一个：{emotion_list}\n"
+    "\n"
+    "任务边界：\n"
+    "1. 只分类回复的情绪，不分类用户消息。\n"
+    "2. 用户消息仅用于帮助理解回复的语气与立场。\n"
+    "\n"
+    "分类规则：\n"
+    "1. 负面情绪优先细分：愤怒→angry，无奈/叹气→sigh，震惊到无语→dumb，悲伤→sad，不解→confused。\n"
+    "2. `troll` 仅用于明显阴阳怪气、挑衅、嘲讽、故意拱火语气。\n"
+    "3. 普通吐槽、拒绝、抱怨、冷淡，不要判为 `troll`。\n"
+    "4. 证据不足时选择最保守、最贴近字面语气的分类。\n"
+    "5. 无明显情绪时输出 none。\n"
+    "\n"
+    "用户消息：{user_message}\n"
+    "回复：{llm_reply}\n"
+    "\n"
+    "输出要求：\n"
+    "- 只能输出一个英文分类名\n"
+    "- 不能输出解释、标点、代码块或其他文字"
+)
+
 
 class NaturalEmotionAnalyzer:
     """自然语言情绪分析器 - 使用小模型理解LLM回复的真实情绪"""
@@ -24,8 +50,11 @@ class NaturalEmotionAnalyzer:
 
     def __init__(self, plugin_instance: Any):
         self.plugin = plugin_instance
+        # 标记：上一次分析是否为模型主动 abstain
+        self.last_analysis_abstained: bool = False
         # v2.7.5+：配置统一通过 plugin_config 读取
-        self.categories: list[str] = plugin_instance.plugin_config.get_categories()
+        self.plugin_config = plugin_instance.plugin_config
+        self.categories: list[str] = self.plugin_config.get_categories()
 
         # 缓存机制
         self.analysis_cache: dict[str, str] = {}
@@ -40,136 +69,87 @@ class NaturalEmotionAnalyzer:
             "successful_analyses": 0,
         }
 
-        # 小模型提示词模板
-        self.emotion_analysis_prompt = self._build_analysis_prompt()
-        self.emotion_analysis_qa_prompt = self._build_qa_analysis_prompt()
+        # 小模型提示词模板（从配置加载）
+        self._emotion_analysis_template = self._load_emotion_analysis_template()
 
-    def _build_analysis_prompt(self) -> str:
-        """构建情绪分析提示词（仅分析回复文本，无用户问题时使用）"""
-        categories_text = self._build_categories_text()
+    def _load_emotion_analysis_template(self) -> str:
+        """从插件配置加载情绪分析提示词模板，无配置时使用默认模板。"""
+        custom = self.plugin_config.emotion_analysis_prompt or ""
+        return custom.strip() if custom.strip() else _EMOTION_ANALYSIS_DEFAULT_TEMPLATE
 
-        return f"""你是对话情绪分类器。请从下列分类中选择一个最匹配的结果：{categories_text}
-
-分类规则：
-1. 只基于文本表达的语气与态度，不推测图片内容，不扩展剧情。
-2. 负面情绪优先细分：愤怒→angry，无奈/叹气→sigh，震惊到无语→dumb，悲伤→sad，不解→confused。
-3. `troll` 仅用于明显的阴阳怪气、挑衅、嘲讽、故意拱火、玩梗发癫语气。
-4. 普通吐槽、拒绝、冷淡、抱怨，不要判为 `troll`。
-5. 证据不足时选择最保守、最贴近字面语气的分类，不要为追求“有趣”而偏向 `troll`。
-
-示例：
-- "哈哈笑死" -> happy
-- "太离谱了" -> dumb
-- "算了懒得说" -> sigh
-
-文本："{{text}}"
-
-输出要求：
-- 只能输出一个英文分类名
-- 不能输出解释、标点、代码块或其他文字"""
-
-    def _build_qa_analysis_prompt(self) -> str:
-        """构建 QA 上下文情绪分析提示词（有用户问题时使用）
-
-        通过提供用户问题（Q）和 LLM 回复（A）的完整上下文，
-        让轻量模型更准确地理解回复的情绪语境。
-        """
-        categories_text = self._build_categories_text()
-
-        return f"""你是对话情绪分类器。请根据 Q/A 语境判断 A 的情绪，并从下列分类中选择一个：{categories_text}
-
-    任务边界：
-    1. 只分类 A（回复）的情绪，不分类 Q（提问）。
-    2. Q 仅用于帮助理解 A 的语气与立场。
-
-    分类规则：
-    1. 负面情绪优先细分：愤怒→angry，无奈/叹气→sigh，震惊到无语→dumb，悲伤→sad，不解→confused。
-    2. `troll` 仅用于明显阴阳怪气、挑衅、嘲讽、故意拱火语气。
-    3. 普通吐槽、拒绝、抱怨、冷淡，不要判为 `troll`。
-    4. 证据不足时选择最保守、最贴近字面语气的分类。
-
-    示例：
-    - Q:"今天加班到几点" A:"别提了，干到十一点" -> sigh
-    - Q:"这个好看吗" A:"也太好看了吧！" -> excitement
-    - Q:"你怎么看" A:"太离谱了，无话可说" -> dumb
-
-    Q:"{{user_query}}"
-    A:"{{text}}"
-
-    输出要求：
-    - 只能输出一个英文分类名
-    - 不能输出解释、标点、代码块或其他文字"""
-
-    def _build_categories_text(self) -> str:
-        """构建分类描述文本（供两种 prompt 共用）"""
-        categories_desc = {}
-        cfg = self.plugin.plugin_config
-        if cfg:
-            for key in self.categories:
-                info = cfg.DEFAULT_CATEGORY_INFO.get(key, {})
+    def _build_emotion_list_text(self) -> str:
+        """构建分类描述文本（紧凑格式，供模板中 {emotion_list} 替换用）"""
+        info_map = self.plugin_config.category_info or {}
+        parts = []
+        for key in self.categories:
+            info = info_map.get(key, {})
+            if isinstance(info, dict):
                 name = str(info.get("name", "")).strip()
                 desc = str(info.get("desc", "")).strip()
                 desc_text = desc or name or key
-                categories_desc[key] = desc_text
-        else:
-            categories_desc = {key: key for key in self.categories}
-
-        return ", ".join(
-            [f"{key}({desc})" for key, desc in categories_desc.items() if key in self.categories]
-        )
+            else:
+                desc_text = key
+            parts.append(f"{key}({desc_text})")
+        return ", ".join(parts) if parts else ", ".join(self.categories)
 
     async def analyze_emotion(
         self,
         event: AstrMessageEvent,
-        text: str,
+        llm_reply: str,
         *,
-        user_query: str = "",
+        user_message: str = "",
     ) -> str | None:
         """分析文本的自然情绪
 
         Args:
             event: 消息事件（用于获取LLM提供商）
-            text: LLM 回复文本
-            user_query: 用户原始消息，与 text 组成 QA 上下文
+            llm_reply: LLM 回复文本
+            user_message: 用户原始消息，与 llm_reply 组成对话上下文
 
         Returns:
             情绪分类，如果分析失败返回None
         """
-        if not text or len(text.strip()) < 3:
+        if not llm_reply or len(llm_reply.strip()) < 3:
             return None
 
         # 清理文本
-        cleaned_text = self._clean_text(text)
-        if not cleaned_text:
+        cleaned_reply = self._clean_text(llm_reply)
+        if not cleaned_reply:
             return None
 
         # 清理用户消息（用于缓存 key 和 prompt）
-        cleaned_query = self._clean_text(user_query) if user_query else ""
+        cleaned_msg = self._clean_text(user_message) if user_message else ""
 
-        # 检查缓存（缓存 key 同时包含 Q 和 A）
-        cache_key = self._get_cache_key(cleaned_query + "|||" + cleaned_text)
+        # 检查缓存（缓存 key 同时包含用户消息和回复）
+        cache_key = self._get_cache_key(cleaned_msg + "|||" + cleaned_reply)
         async with self._cache_lock:
             if cache_key in self.analysis_cache:
                 self.stats["cache_hits"] += 1
-                logger.debug(f"[情绪分析] 缓存命中: {cleaned_text[:30]}...")
+                logger.debug(f"[情绪分析] 缓存命中: {cleaned_reply[:30]}...")
                 return self.analysis_cache[cache_key]
 
         # 本地预匹配：先用分词匹配关键词映射（快速路径）
-        local_match = self._local_keyword_match(cleaned_text)
+        local_match = self._local_keyword_match(cleaned_reply)
         if local_match:
-            logger.info(f"[情绪分析] 本地匹配: {cleaned_text[:30]}... → {local_match}")
+            logger.debug(f"[情绪分析] 本地匹配: {cleaned_reply[:30]}... → {local_match}")
             async with self._cache_lock:
                 self._cache_result(cache_key, local_match)
             return local_match
 
-        # 执行 LLM 分析（传入用户问题作为上下文）
+        # 执行 LLM 分析（传入用户消息作为上下文）
         start_time = time.time()
         emotion = await self._analyze_with_llm(
             event,
-            cleaned_text,
-            user_query=cleaned_query,
+            cleaned_reply,
+            user_message=cleaned_msg,
         )
         end_time = time.time()
+
+        # 模型明确 abstain，不走降级和失败日志
+        if emotion is _EMOTION_ABSTAIN:
+            self.last_analysis_abstained = True
+            return None
+        self.last_analysis_abstained = False
 
         # 更新统计
         self.stats["total_analyses"] += 1
@@ -178,17 +158,17 @@ class NaturalEmotionAnalyzer:
 
         # LLM 失败时降级到本地匹配
         if not emotion:
-            emotion = self._local_keyword_match(cleaned_text, fallback=True)
+            emotion = self._local_keyword_match(cleaned_reply, fallback=True)
             if emotion:
-                logger.info(f"[情绪分析] LLM失败，降级匹配: {cleaned_text[:30]}... → {emotion}")
+                logger.debug(f"[情绪分析] LLM失败，降级匹配: {cleaned_reply[:30]}... → {emotion}")
 
         # 缓存结果
         if emotion:
             async with self._cache_lock:
                 self._cache_result(cache_key, emotion)
-            logger.info(f"[情绪分析] {cleaned_text[:30]}... → {emotion} ({response_time:.0f}ms)")
+            logger.info(f"[情绪分析] {cleaned_reply[:30]}... → {emotion} ({response_time:.0f}ms)")
         else:
-            logger.warning(f"[情绪分析] 分析失败: {cleaned_text[:30]}...")
+            logger.warning(f"[情绪分析] 分析失败: {cleaned_reply[:30]}...")
 
         return emotion
 
@@ -259,16 +239,16 @@ class NaturalEmotionAnalyzer:
     async def _analyze_with_llm(
         self,
         event: AstrMessageEvent,
-        text: str,
+        llm_reply: str,
         *,
-        user_query: str = "",
+        user_message: str = "",
     ) -> str | None:
         """使用小模型分析情绪
 
         Args:
             event: 消息事件
-            text: LLM 回复文本（已清理）
-            user_query: 用户原始消息（已清理），有值时使用 QA 模板
+            llm_reply: LLM 回复文本（已清理）
+            user_message: 用户原始消息（已清理）
         """
         try:
             # 获取文本模型提供商（优先使用配置的小模型）
@@ -277,15 +257,23 @@ class NaturalEmotionAnalyzer:
                 logger.warning("[情绪分析] 未找到可用的文本模型")
                 return None
 
-            # 构建提示词：有用户问题时使用 QA 模板，否则使用纯文本模板
-            if user_query:
-                prompt = self.emotion_analysis_qa_prompt.format(
-                    user_query=user_query,
-                    text=text,
+            # 构建提示词：用分类列表替换 {emotion_list}，再填入具体文本
+            emotion_list = self._build_emotion_list_text()
+            try:
+                prompt = self._emotion_analysis_template.format(
+                    emotion_list=emotion_list,
+                    llm_reply=llm_reply,
+                    user_message=user_message if user_message else "",
                 )
-                logger.debug(f"[情绪分析] 使用QA模板，Q={user_query[:30]}...")
-            else:
-                prompt = self.emotion_analysis_prompt.format(text=text)
+            except KeyError as e:
+                logger.warning(
+                    f"[情绪分析] 提示词模板缺少占位符 {e}，使用默认模板"
+                )
+                prompt = _EMOTION_ANALYSIS_DEFAULT_TEMPLATE.format(
+                    emotion_list=emotion_list,
+                    llm_reply=llm_reply,
+                    user_message=user_message if user_message else "",
+                )
 
             # 调用LLM（限制 max_tokens 提升速度）
             logger.debug(f"[情绪分析] 调用LLM，provider_id={provider_id}")
@@ -374,6 +362,11 @@ class NaturalEmotionAnalyzer:
         # 清理结果
         result = result_text.strip().lower()
 
+        # 模型选择不发送
+        if re.match(r"^none[\s:：,，.。!！?？]*$", result):
+            logger.info(f"[情绪分析] 模型输出 none，跳过发送")
+            return _EMOTION_ABSTAIN  # type: ignore
+
         cfg = self.plugin.plugin_config
 
         # 尝试从文本中提取已知的分类名
@@ -402,7 +395,7 @@ class NaturalEmotionAnalyzer:
             logger.debug(f"[情绪分析] Fallback 匹配: '{result}'")
             return result
 
-        logger.warning(f"[情绪分析] 无法从回复中解析分类: '{result_text}'")
+        logger.debug(f"[情绪分析] 无法从回复中解析分类: '{result_text}'")
         return None
 
     def _get_cache_key(self, text: str) -> str:
@@ -465,37 +458,38 @@ class SmartEmotionMatcher:
     async def analyze_and_match_emotion(
         self,
         event: AstrMessageEvent,
-        text: str,
+        llm_reply: str,
         use_natural_analysis: bool = True,
         *,
-        user_query: str = "",
+        user_message: str = "",
     ) -> str | None:
         """分析并匹配情绪
 
         Args:
             event: 消息事件
-            text: LLM 回复文本
+            llm_reply: LLM 回复文本
             use_natural_analysis: 是否使用自然语言分析
-            user_query: 用户原始消息，与 text 组成 QA 上下文提升分析准确度
+            user_message: 用户原始消息，与 llm_reply 组成对话上下文提升分析准确度
 
         Returns:
             匹配的情绪分类
         """
-        if not text or len(text.strip()) < 3:
+        if not llm_reply or len(llm_reply.strip()) < 3:
             return None
 
         # 使用自然语言分析（主要方案）
         if use_natural_analysis and self.plugin.plugin_config.enable_natural_emotion_analysis:
             emotion = await self.natural_analyzer.analyze_emotion(
                 event,
-                text,
-                user_query=user_query,
+                llm_reply,
+                user_message=user_message,
             )
             if emotion:
                 return emotion
-            else:
-                logger.warning(f"[智能匹配] 自然语言分析失败: {text[:30]}...")
+            if self.natural_analyzer.last_analysis_abstained:
                 return None
+            logger.debug(f"[智能匹配] 自然语言分析失败: {llm_reply[:30]}...")
+            return None
 
         # 如果禁用了自然语言分析，返回None（被动模式依赖标签）
         logger.debug("[智能匹配] 自然语言分析已禁用")

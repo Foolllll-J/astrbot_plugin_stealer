@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2026-08-01
+
+### added
+- PR #91: 情绪分析提示词可配置化（`emotion_analysis_prompt`），支持模型输出 `none` 跳过发送（abstain）
+- PR #90: 待审核区分页返回 `category_total`，按分类筛选时保留其他分类计数
+- metadata.yaml 补充 `short_desc`（市场卡片短描述，v4.24+ 规范）
+- 测试纳入版本控制并补齐：情绪分析器、待审核池、metadata 结构、PluginAPI 分类列表（tests/）
+
+### fixed
+- PR #90: WebUI 响应式布局与图片加载修复（dashboard CSS/JS）
+- PR #90: 缩略图回退支持从 pending 池按 hash 取图（`get_pending_by_hash`）
+
 ## [2.7.7] - 2026-07-23
 
 ### changed

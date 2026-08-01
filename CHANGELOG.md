@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.1] - 2026-08-01
+
+### added
+- metadata.yaml 补充市场展示字段：`tags`（表情包/图片识别/情绪匹配/LLM 工具调用/WebUI/群聊）、`category: 娱乐`、`author_url`、`help`（/meme 指令帮助）、`pages`（表情包管理页）
+- tests: 新增 TestDiscoveryFields 覆盖 tags/category/author_url/help/pages 结构断言（tests/test_metadata.py）
+
 ## [2.8.0] - 2026-08-01
 
 ### added

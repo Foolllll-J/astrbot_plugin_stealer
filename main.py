@@ -1269,13 +1269,13 @@ class Main(Star):
 
         if not self._claim_auto_emoji_turn(event):
             return cleaned_text != text
-        user_query = ""
+        user_message = ""
         try:
-            user_query = event.get_message_str() or ""
+            user_message = event.get_message_str() or ""
         except Exception:
             pass
         task = self._safe_create_task(
-            self._async_analyze_and_send_emoji(event, cleaned_text, emotions, user_query=user_query),
+            self._async_analyze_and_send_emoji(event, cleaned_text, emotions, user_message=user_message),
             name="emoji_analyze_passive",
         )
         self._schedule_auto_emoji_task(event, task)

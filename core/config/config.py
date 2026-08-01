@@ -14,7 +14,7 @@ class PluginConfig(BaseModel):
     steal_meme: bool = False
     steal_mode: str = "probability"  # "probability" 或 "cooldown"
     steal_chance: float = 0.3  # 概率模式下的偷图概率
-    auto_send_meme: bool = False
+    auto_send_meme: bool = True
     meme_chance: float = 0.2
     send_meme_as_gif: bool = False
     meme_send_char_delay: float = 0.3
@@ -53,6 +53,7 @@ class PluginConfig(BaseModel):
     # === 自定义提示词 ===
     custom_meme_classification_prompt: str = ""
     custom_meme_classification_with_filter_prompt: str = ""
+    emotion_analysis_prompt: str = ""
 
     # === 内化常量（不再暴露给用户） ===
     DO_REPLACE: ClassVar[bool] = True  # 达到上限始终替换旧表情

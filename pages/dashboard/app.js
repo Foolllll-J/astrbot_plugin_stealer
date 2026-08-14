@@ -1633,6 +1633,26 @@ createApp({
             });
         };
 
+        // v5 元数据展示辅助
+        const formatBytes = (bytes) => {
+            if (!bytes && bytes !== 0) return '';
+            const n = Number(bytes);
+            if (!Number.isFinite(n) || n < 0) return '';
+            if (n < 1024) return n + ' B';
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+            return (n / 1024 / 1024).toFixed(1) + ' MB';
+        };
+
+        const formatAddMethod = (method) => {
+            const map = {
+                auto: t('pages.dashboard.fields.add_method_auto', '自动收集'),
+                manual: t('pages.dashboard.fields.add_method_manual', '手动入库'),
+                llm: t('pages.dashboard.fields.add_method_llm', 'LLM 入库'),
+                api: t('pages.dashboard.fields.add_method_api', 'API 入库'),
+            };
+            return map[method] || t('pages.dashboard.fields.add_method_unknown', '未知');
+        };
+
         const applyTheme = () => {
             document.documentElement.setAttribute('data-theme', theme.value);
         };

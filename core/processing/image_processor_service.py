@@ -75,14 +75,16 @@ class ImageProcessorService:
         # 以下仅为 prompts.json 缺失时的最小化 fallback
         _FALLBACK_PROMPT = (
             "分析表情包：从 `{emotion_list}` 中选择情绪分类。"
-            '返回JSON格式：{"category": "分类名", "tags": ["标签1", "标签2"], '
+            '返回JSON格式：{"category": "分类名", "tags": ["标签1", "标签2", "标签3", "标签4"], '
             '"description": "画面描述", "scenes": ["场景1", "场景2"]}'
+            "tags 输出 2~4 个、scenes 输出 1~2 个，不要重复。"
         )
         _FALLBACK_FILTER_PROMPT = (
             '审核图片是否含不当内容，不当则返回{"approved": false, "reason": "审核不通过"}。'
             "否则从 `{emotion_list}` 中选择情绪分类。"
-            '返回JSON格式：{"approved": true, "category": "分类名", "tags": ["标签1"], '
-            '"description": "画面描述", "scenes": ["场景1"]}'
+            '返回JSON格式：{"approved": true, "category": "分类名", "tags": ["标签1", "标签2", "标签3", "标签4"], '
+            '"description": "画面描述", "scenes": ["场景1", "场景2"]}'
+            "tags 输出 2~4 个、scenes 输出 1~2 个，不要重复。"
         )
 
         self.emoji_classification_prompt = getattr(
@@ -270,12 +272,18 @@ class ImageProcessorService:
         scenes: list[str] | None = None,
         already_in_raw: bool = False,
         phash_val: str = "",
+        source_url: str = "",
+        original_name: str = "",
+        add_method: str = "auto",
     ) -> tuple[bool, dict[str, Any] | None]:
         """将图片存储到 raw → 复制到分类目录 → 删除 raw → 更新索引。
 
         Args:
             already_in_raw: 若为 True，则 file_path 已在 raw 目录中，
                             跳过 move/copy-to-raw 步骤，直接作为 raw_path 使用。
+            source_url: 图片来源 URL（尽力获取，可能为空）
+            original_name: 原始文件名
+            add_method: 入库方式 auto/manual/llm
 
         Returns:
             (成功与否, 更新后的索引)
@@ -342,6 +350,13 @@ class ImageProcessorService:
                 if k in {"hash", "category", "created_at", "use_count", "last_used_at"}:
                     continue
                 entry[k] = v
+        # v5 元数据：图片尺寸/格式/字节数 + 来源信息 + 入库方式
+        entry.update(self._probe_image_metadata(cat_path if os.path.exists(cat_path) else raw_path))
+        if source_url:
+            entry["source_url"] = source_url
+        if original_name:
+            entry["original_name"] = original_name
+        entry["add_method"] = add_method
         idx[cat_path] = entry
 
         if not getattr(self.plugin, "enable_embedding_search", True):
@@ -373,6 +388,9 @@ class ImageProcessorService:
         scenes: list[str] | None = None,
         already_in_raw: bool = False,
         phash_val: str = "",
+        source_url: str = "",
+        original_name: str = "",
+        add_method: str = "auto",
     ) -> tuple[bool, dict[str, Any] | None]:
         """将偷取的图片落点到待审核池（pending 目录 + emoji_pending 表）。
 
@@ -447,6 +465,13 @@ class ImageProcessorService:
                 meta[k] = v
             if "scope_mode" not in extra_meta:
                 meta.setdefault("scope_mode", "public")
+        # v5 元数据：图片尺寸/格式/字节数 + 来源信息 + 入库方式（与正式库同构）
+        meta.update(self._probe_image_metadata(pending_path))
+        if source_url:
+            meta["source_url"] = source_url
+        if original_name:
+            meta["original_name"] = original_name
+        meta["add_method"] = add_method
 
         try:
             pending_id = await self.plugin.db_service.insert_pending(meta)
@@ -477,6 +502,9 @@ class ImageProcessorService:
         is_platform_emoji: bool = False,
         extra_meta: dict[str, Any] | None = None,
         to_pending: bool = False,
+        source_url: str = "",
+        original_name: str = "",
+        add_method: str = "auto",
     ) -> tuple[bool, dict[str, Any] | None]:
         """统一处理图片：存储、分类、过滤。
 
@@ -531,8 +559,9 @@ class ImageProcessorService:
             self._processing_hashes.add(hash_val)
 
         try:
-            # 3. 缓存检查（锁外）
-            cached = self._get_valid_cache(hash_val)
+            # 3. 缓存检查（锁外；缓存带 VLM model_sig，换模型即失效）
+            model_sig = str(await self._resolve_vision_provider(event) or "")
+            cached = self._get_valid_cache(hash_val, model_sig)
             if cached is not None:
                 async with self._process_lock:
                     return await self._handle_classification_result(
@@ -549,6 +578,9 @@ class ImageProcessorService:
                         from_cache=True,
                         phash_val=phash_val,
                         to_pending=to_pending,
+                        source_url=source_url,
+                        original_name=original_name,
+                        add_method=add_method,
                     )
 
             # 4. 存入 raw 目录（锁外）
@@ -563,7 +595,7 @@ class ImageProcessorService:
             )
 
             # 6. 缓存结果（锁外）
-            self._put_image_cache(hash_val, category, tags, desc, emotion, scenes)
+            self._put_image_cache(hash_val, category, tags, desc, emotion, scenes, model_sig)
 
             # 7. 处理分类结果（锁内）
             async with self._process_lock:
@@ -582,6 +614,9 @@ class ImageProcessorService:
                     already_in_raw=True,
                     phash_val=phash_val,
                     to_pending=to_pending,
+                    source_url=source_url,
+                    original_name=original_name,
+                    add_method=add_method,
                 )
 
         except Exception as e:
@@ -681,10 +716,14 @@ class ImageProcessorService:
 
         return False
 
-    def _get_valid_cache(self, hash_val: str) -> dict | None:
-        """获取有效（未过期）的分类缓存，过期则清除。"""
+    def _get_valid_cache(self, hash_val: str, model_sig: str = "") -> dict | None:
+        """获取有效（未过期且模型签名一致）的分类缓存，过期或换模型则清除。"""
         cached = self._image_cache.get(hash_val)
         if cached is None:
+            return None
+        if str(cached.get("model_sig", "") or "") != str(model_sig or ""):
+            # VLM 模型已更换：旧分类结果不可复用
+            self._image_cache.pop(hash_val, None)
             return None
         if time.time() - cached.get("timestamp", 0) < self._cache_expire_time:
             return cached
@@ -699,6 +738,7 @@ class ImageProcessorService:
         desc: str,
         emotion: str,
         scenes: list,
+        model_sig: str = "",
     ) -> None:
         """写入分类缓存并淘汰过期条目。"""
         self._image_cache[hash_val] = {
@@ -707,6 +747,7 @@ class ImageProcessorService:
             "desc": desc,
             "emotion": emotion,
             "scenes": scenes,
+            "model_sig": str(model_sig or ""),
             "timestamp": time.time(),
         }
         self._evict_image_cache()
@@ -741,6 +782,9 @@ class ImageProcessorService:
         already_in_raw: bool = False,
         phash_val: str = "",
         to_pending: bool = False,
+        source_url: str = "",
+        original_name: str = "",
+        add_method: str = "auto",
     ) -> tuple[bool, dict[str, Any] | None]:
         """根据分类结果决定存储、跳过或清理。"""
         source = "缓存" if from_cache else "VLM"
@@ -778,6 +822,9 @@ class ImageProcessorService:
                     scenes=scenes,
                     already_in_raw=already_in_raw,
                     phash_val=phash_val,
+                    source_url=source_url,
+                    original_name=original_name,
+                    add_method=add_method,
                 )
             return await self._store_and_index_image(
                 file_path,
@@ -791,6 +838,9 @@ class ImageProcessorService:
                 scenes=scenes,
                 already_in_raw=already_in_raw,
                 phash_val=phash_val,
+                source_url=source_url,
+                original_name=original_name,
+                add_method=add_method,
             )
 
         # 无效分类
@@ -868,6 +918,7 @@ class ImageProcessorService:
                 desc=normalized_desc,
                 scenes=normalized_scenes,
                 already_in_raw=True,
+                add_method="llm",
             )
 
             if success and merged_idx is not None:
@@ -1011,6 +1062,28 @@ class ImageProcessorService:
         return await self._vlm_call_service._llm_generate_with_image_compat(
             provider_id, prompt, file_url
         )
+
+    @staticmethod
+    def _probe_image_metadata(file_path: str) -> dict[str, Any]:
+        """探测图片元数据：宽高、格式、字节数（v5 元数据列）。
+
+        失败时静默返回空 dict（不阻塞入库）。
+        """
+        meta: dict[str, Any] = {}
+        try:
+            if PILImage is not None and file_path and os.path.exists(file_path):
+                with PILImage.open(file_path) as img:
+                    meta["width"], meta["height"] = img.size
+                    fmt = str(img.format or "").lower()
+                    meta["format"] = fmt if fmt else None
+        except Exception:
+            pass
+        try:
+            if file_path and os.path.exists(file_path):
+                meta["bytes"] = os.path.getsize(file_path)
+        except Exception:
+            pass
+        return meta
 
     async def _compute_hash(self, file_path: str) -> str:
         """计算文件的SHA256哈希值。

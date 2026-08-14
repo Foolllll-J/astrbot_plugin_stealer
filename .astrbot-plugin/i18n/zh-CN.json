@@ -13,12 +13,8 @@
             "description": "发送设置",
             "hint": ""
         },
-        "_emotion_section": {
-            "description": "情绪识别",
-            "hint": ""
-        },
         "_model_section": {
-            "description": "模型配置",
+            "description": "模型配置（视觉 / 情绪分析 / 嵌入检索）",
             "hint": ""
         },
         "_group_section": {
@@ -168,6 +164,34 @@
         "custom_meme_classification_with_filter_prompt": {
             "description": "VLM 分类提示词（带审核）",
             "hint": "开启内容审核时使用的 VLM 分类提示词。支持占位符：{emotion_list}（分类列表）。为空时使用默认提示词。"
+        },
+        "_smart_section": {
+            "description": "智能选择：文字距离融合权重",
+            "hint": ""
+        },
+        "sim_weight_ngram": {
+            "description": "相似度-词组重叠权重（ngram）",
+            "hint": "混合相似度中 n-gram Jaccard 的融合权重"
+        },
+        "sim_weight_cosine": {
+            "description": "相似度-词频余弦权重",
+            "hint": "混合相似度中词频余弦的融合权重"
+        },
+        "sim_weight_substring": {
+            "description": "相似度-子串匹配权重",
+            "hint": "混合相似度中子串包含的融合权重"
+        },
+        "sim_weight_char": {
+            "description": "相似度-字符级权重",
+            "hint": "中文字符级 Jaccard 兜底召回权重"
+        },
+        "sim_weight_edit": {
+            "description": "相似度-编辑距离权重",
+            "hint": "编辑距离融合权重，短情绪词建议较高"
+        },
+        "sim_negation_penalty": {
+            "description": "否定词惩罚系数",
+            "hint": "否定词语义反转时最终分数乘以此系数"
         }
     },
     "pages": {
@@ -295,7 +319,16 @@
                 "scenes": "场景",
                 "created_at": "添加时间",
                 "target_category": "目标分类",
-                "target_scope": "目标作用域"
+                "target_scope": "目标作用域",
+                "image_meta": "图片信息",
+                "added": "入库方式",
+                "reviewed_at": "审核于",
+                "source": "来源链接",
+                "add_method_auto": "自动收集",
+                "add_method_manual": "手动入库",
+                "add_method_llm": "LLM 入库",
+                "add_method_api": "API 入库",
+                "add_method_unknown": "未知"
             },
             "units": {
                 "times": "次"

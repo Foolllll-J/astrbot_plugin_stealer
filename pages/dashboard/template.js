@@ -498,6 +498,18 @@ export const TEMPLATE = `
                         <span class="stat-name">{{ t('pages.dashboard.fields.origin', 'Origin') }}</span>
                         <span class="stat-value">{{ formatOriginTarget(previewItem?.origin_target) }}</span>
                     </div>
+                    <div v-if="previewItem?.width || previewItem?.format || previewItem?.bytes" class="stat-row">
+                        <span class="stat-name">{{ t('pages.dashboard.fields.image_meta', 'Image') }}</span>
+                        <span class="stat-value">{{ [previewItem?.width && previewItem?.height ? previewItem.width + '×' + previewItem.height : '', previewItem?.format ? String(previewItem.format).toUpperCase() : '', formatBytes(previewItem?.bytes)].filter(Boolean).join(' · ') }}</span>
+                    </div>
+                    <div v-if="previewItem?.add_method || previewItem?.reviewed_at" class="stat-row">
+                        <span class="stat-name">{{ t('pages.dashboard.fields.added', 'Added') }}</span>
+                        <span class="stat-value">{{ formatAddMethod(previewItem?.add_method) }}{{ previewItem?.reviewed_at ? ' · ' + t('pages.dashboard.fields.reviewed_at', 'Reviewed') + ' ' + formatDate(previewItem.reviewed_at) : '' }}</span>
+                    </div>
+                    <div v-if="previewItem?.source_url" class="stat-row">
+                        <span class="stat-name">{{ t('pages.dashboard.fields.source', 'Source') }}</span>
+                        <span class="stat-value" style="word-break:break-all">{{ previewItem.source_url }}</span>
+                    </div>
                     <div class="stat-row">
                         <span class="stat-name">{{ t('pages.dashboard.fields.description', 'Description') }}</span>
                     </div>

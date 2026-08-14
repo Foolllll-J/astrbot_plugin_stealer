@@ -270,5 +270,48 @@ class TestBM25Integration:
         assert results[0][0] == 0
 
 
+class TestConfigureSimilarity:
+    """权重配置化：configure_similarity 覆盖默认权重并清缓存。"""
+
+    def _reset(self):
+        from core.search import text_similarity
+
+        text_similarity.configure_similarity(
+            weights={"ngram": 0.28, "cosine": 0.25, "substring": 0.12, "char": 0.08, "edit": 0.27},
+            negation_penalty=0.25,
+        )
+
+    def test_weight_change_updates_state(self):
+        from core.search import text_similarity
+
+        self._reset()
+        text_similarity.configure_similarity(
+            weights={"ngram": 0.0, "cosine": 0.0, "substring": 0.0, "char": 0.0, "edit": 1.0}
+        )
+        assert text_similarity._SIM_WEIGHTS["edit"] == 1.0
+        assert text_similarity._SIM_WEIGHTS["ngram"] == 0.0
+        self._reset()
+        assert text_similarity._SIM_WEIGHTS["edit"] == 0.27
+
+    def test_negation_penalty_change(self):
+        from core.search import text_similarity
+
+        self._reset()
+        text_similarity.configure_similarity(negation_penalty=1.0)
+        assert text_similarity._NEGATION_PENALTY == 1.0
+        self._reset()
+        assert text_similarity._NEGATION_PENALTY == 0.25
+
+    def test_invalid_value_ignored(self):
+        from core.search import text_similarity
+
+        self._reset()
+        # 非法值（负数/越界）应被忽略
+        text_similarity.configure_similarity(weights={"ngram": -5}, negation_penalty=2.0)
+        assert text_similarity._SIM_WEIGHTS["ngram"] == 0.28
+        assert text_similarity._NEGATION_PENALTY == 0.25
+        self._reset()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

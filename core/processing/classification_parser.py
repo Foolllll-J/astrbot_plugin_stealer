@@ -6,6 +6,10 @@ from typing import Any
 
 from astrbot.api import logger
 
+# 打标数量上限（与 prompts.json 的 output_format 约束一致）
+MAX_TAGS = 4
+MAX_SCENES = 2
+
 
 class ClassificationParser:
     """负责解析 VLM 的分类响应。"""
@@ -14,6 +18,44 @@ class ClassificationParser:
 
     def __init__(self, plugin_instance=None) -> None:
         self.plugin = plugin_instance
+
+    @staticmethod
+    def normalize_label_list(
+        values: Any,
+        max_count: int,
+        *,
+        allow_duplicates: bool = False,
+    ) -> list[str]:
+        """规范化标签/场景列表：拆分字符串、去空白、去空项、保序去重、截断到上限。
+
+        Args:
+            values: VLM 输出的 tags/scenes（list 或逗号分隔字符串）
+            max_count: 最多保留数量（超出截断）
+            allow_duplicates: 是否允许重复（默认去重）
+        """
+        if isinstance(values, str):
+            items = [
+                s.strip()
+                for s in values.replace("，", ",").replace("、", ",").replace("；", ",").split(",")
+                if s.strip()
+            ]
+        elif isinstance(values, list):
+            items = [str(v).strip() for v in values if v is not None and str(v).strip()]
+        else:
+            return []
+
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not item:
+                continue
+            if not allow_duplicates and item in seen:
+                continue
+            seen.add(item)
+            result.append(item)
+            if len(result) >= max_count:
+                break
+        return result
 
     def _normalize_category(self, raw: str) -> str:
         """将 VLM 返回的分类文本规范化为有效分类名（委托到 ImageProcessorService）。"""
@@ -49,15 +91,9 @@ class ClassificationParser:
 
         normalized_category = self._normalize_category(category)
 
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.replace(chr(65292), ",").split(",") if t.strip()]
-        elif not isinstance(tags, list):
-            tags = []
-
-        if isinstance(scenes, str):
-            scenes = [s.strip() for s in scenes.replace(chr(65292), ",").split(",") if s.strip()]
-        elif not isinstance(scenes, list):
-            scenes = []
+        # 标签/场景规范化：保序去重 + 数量截断（tags≤4、scenes≤2，与提示词约束一致）
+        tags = self.normalize_label_list(tags, MAX_TAGS)
+        scenes = self.normalize_label_list(scenes, MAX_SCENES)
 
         return normalized_category, tags, description, normalized_category, scenes
 
@@ -125,4 +161,10 @@ class ClassificationParser:
         ]
 
         category = self._normalize_category(emotion_result)
-        return category, tags_result, desc_result, category, scenes_result
+        return (
+            category,
+            self.normalize_label_list(tags_result, MAX_TAGS),
+            desc_result,
+            category,
+            self.normalize_label_list(scenes_result, MAX_SCENES),
+        )

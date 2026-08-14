@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.2] - 2026-08-14
+
+### added
+- DB schema v5：`emoji` / `emoji_pending` 新增图片元数据列（`source_url` / `original_name` / `width` / `height` / `format` / `bytes` / `add_method`，`emoji` 另有 `reviewed_at`），入库与审核流程自动填充；建表语句直接含全列（新旧库均幂等迁移）
+- 待审核池标签/场景存储对齐正式库：新增 `emoji_pending_tag` / `emoji_pending_scene` 关联表，取代 `tags_text` / `scenes_text` 逗号拼接列（v4→v5 自动迁移；重复标签按正式表语义去重）
+- VLM 打标数量约束：默认提示词明确 tags 输出 2~4 个、scenes 1~2 个；解析器统一规范化（保序去重 + 截断上限），旧管道分隔格式同样生效
+- 分类缓存绑定 VLM 模型签名（`model_sig`）：切换视觉模型后旧分类结果自动失效，与嵌入向量表的 model_sig 机制对齐
+- 文字距离融合权重配置化：`sim_weight_ngram/cosine/substring/char/edit` + `sim_negation_penalty` 六个权重可调（新增「智能选择：文字距离融合权重」分组），`configure_similarity()` 覆盖默认值并清缓存，启动与配置更新时自动同步
+- 新命令 `/meme tag_stats [N]`：高频标签 Top、低频单次标签（噪声提示）、零标签条目数、高频场景 Top 5
+- WebUI 预览面板新增图片信息（尺寸 · 格式 · 大小）、入库方式、审核时间、来源链接展示
+
+### changed
+- 配置面板按用户路径重排：模型配置组（视觉模型 / 情绪分析模式 / 情绪分析模型 / 嵌入检索开关 / 嵌入模型 ID）上移到「偷图设置」之后，`emotion_analysis_prompt` 归入高级配置，删除独立的情绪识别分组
+- `DatabaseService` 统一 `_INSERT_EMOJI_SQL` / `_EMOJI_SCALAR_COLUMNS` / `_META_COLUMNS` 常量，元数据列在全部 CRUD/同步/迁移路径透传；`get_stats` 补充 `pending_count`
+- i18n 三语言同步：zh-CN / en-US / ru-RU 补齐新增配置键与前端字段键（含 ru-RU 此前缺失的 `fields` 段）
+- 死代码清理：`meme_selector` 遗留的 6 个未使用常量、`DatabaseService._join_multi`、未使用 import
+- 测试补强：v5 迁移与关联表回归、fresh 库建表回归、标签规范化、权重配置化（tests/test_schema_v5.py、tests/test_text_similarity.py）
+
+### fixed
+- pending 标签含逗号时审核通过会错误拆分的隐患（逗号拼接列 → 关联表后消除）
+- WebUI 预览面板元数据显示为空壳：后端 `_build_image_item` / `_build_pending_item` 丢弃元数据列，现已透传
+- `/meme tag_stats` 同步 DB 查询阻塞事件循环：改为 `asyncio.to_thread` 丢线程池
+
 ## [2.8.1] - 2026-08-01
 
 ### added

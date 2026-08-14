@@ -1,3 +1,4 @@
+import asyncio
 from collections import Counter
 from typing import Any
 
@@ -241,7 +242,61 @@ class CommandHandler:
 
         yield event.plain_result(status_text)
 
-    async def clean(self, event: AstrMessageEvent, mode: str = ""):
+    async def tag_stats(self, event: AstrMessageEvent, limit: str = ""):
+        """标签/场景统计：高频标签、低频标签、零标签条目。
+
+        用法: /meme tag_stats [N]   （N 为 Top 数量，默认 15）
+        """
+        try:
+            db = getattr(self.plugin, "db_service", None)
+            if db is None or not hasattr(db, "get_tag_stats"):
+                yield event.plain_result("❌ 数据库服务不可用")
+                return
+
+            top_n = 15
+            try:
+                parsed = int(str(limit or "").strip())
+                if 1 <= parsed <= 50:
+                    top_n = parsed
+            except ValueError:
+                pass
+
+            # 同步 sqlite 查询丢线程池，避免阻塞事件循环（best practice）
+            stats = await asyncio.to_thread(db.get_tag_stats, top_n)
+
+            lines: list[str] = []
+            lines.append("🏷️ 标签统计（打标质量体检）:")
+            lines.append(
+                f"总表情: {stats['total_emojis']} | 有标签: {stats['total_with_tags']} | "
+                f"无标签: {stats['zero_tag_count']}"
+            )
+            if stats["zero_tag_count"]:
+                lines.append("⚠️ 无标签的表情无法被关键词检索，建议在 WebUI 补充标签")
+
+            lines.append(f"\n📈 高频标签 Top {top_n}:")
+            if stats["top_tags"]:
+                for i, item in enumerate(stats["top_tags"], 1):
+                    lines.append(f"  {i}. {item['tag']} ×{item['count']}")
+            else:
+                lines.append("  （暂无标签）")
+
+            if stats["single_use_tags"]:
+                lines.append("\n🔍 低频标签（仅出现 1 次，疑似噪声/同义词，可考虑合并）:")
+                shown = "、".join(stats["single_use_tags"][:10])
+                more = f" 等共 {len(stats['single_use_tags'])} 个" if len(stats["single_use_tags"]) > 10 else ""
+                lines.append(f"  {shown}{more}")
+
+            if stats["top_scenes"]:
+                lines.append(f"\n🎬 高频场景 Top {min(5, len(stats['top_scenes']))}:")
+                for i, item in enumerate(stats["top_scenes"][:5], 1):
+                    lines.append(f"  {i}. {item['scene']} ×{item['count']}")
+
+            lines.append("\n💡 提示: 低频标签多说明 VLM 输出不稳定，可在审核时统一措辞")
+
+            yield event.plain_result("\n".join(lines))
+        except Exception as e:
+            logger.error(f"标签统计失败: {e}", exc_info=True)
+            yield event.plain_result(f"❌ 标签统计失败: {e}")
         """手动触发清理操作，清理raw目录中的原始图片文件，不影响已分类的表情包。
 
         Args:

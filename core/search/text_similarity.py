@@ -14,15 +14,48 @@ _PUNCT_RE = re.compile(r"[^\w\s]")
 _EN_WORD_RE = re.compile(r"^[a-zA-Z]+$")
 _REPEAT_CHAR_RE = re.compile(r"([\u4e00-\u9fffA-Za-z])\1{2,}")
 
-K1 = 1.5
-B = 0.75
+# ── 可配置权重（默认值与历史行为一致；插件启动/配置更新时由
+#    configure_similarity() 覆盖，见 _conf_schema.json 的 _smart_section 分组）──
+_SIM_WEIGHTS: dict[str, float] = {
+    "ngram": 0.28,      # n-gram Jaccard（语义词组重叠）
+    "cosine": 0.25,     # n-gram 词频余弦
+    "substring": 0.12,  # 子串包含匹配
+    "char": 0.08,       # 中文字符级 Jaccard（兜底）
+    "edit": 0.27,       # 编辑距离相似度
+}
+_NEGATION_PENALTY: float = 0.25  # 否定词语义反转惩罚系数
+_BM25_K1: float = 1.5
+_BM25_B: float = 0.75
 EPSILON = 0.25
 
 
+def configure_similarity(
+    *,
+    weights: dict[str, float] | None = None,
+    negation_penalty: float | None = None,
+) -> None:
+    """按插件配置覆盖文字距离融合权重（魔法数字 → 配置项）。
+
+    仅在值合法时更新；变更后清空混合相似度 lru_cache，避免旧缓存与新权重不一致。
+    """
+    global _NEGATION_PENALTY
+    changed = False
+    if weights:
+        for key, value in weights.items():
+            if key in _SIM_WEIGHTS and isinstance(value, (int, float)) and value >= 0:
+                _SIM_WEIGHTS[key] = float(value)
+                changed = True
+    if isinstance(negation_penalty, (int, float)) and 0 <= negation_penalty <= 1:
+        _NEGATION_PENALTY = float(negation_penalty)
+        changed = True
+    if changed:
+        _calculate_hybrid_similarity_cached.cache_clear()
+
+
 class BM25:
-    def __init__(self, corpus: list[list[str]], k1: float = 1.5, b: float = 0.75):
-        self.k1 = k1
-        self.b = b
+    def __init__(self, corpus: list[list[str]], k1: float | None = None, b: float | None = None):
+        self.k1 = k1 if k1 is not None else _BM25_K1
+        self.b = b if b is not None else _BM25_B
         self.corpus_size = 0
         self.avgdl = 0
         self.doc_freqs: dict[str, int] = {}
@@ -368,8 +401,13 @@ def _calculate_hybrid_similarity_cached(t1: str, t2: str) -> float:
 
     # ---- 融合（优化权重：降低子串权重，提高编辑距离权重）----
     # 针对情绪词匹配场景优化：短词编辑距离更重要，子串容易因否定词误判
+    # 权重来自 _SIM_WEIGHTS（可由 _conf_schema.json 的 _smart_section 配置覆盖）
     score = (
-        ngram_sim * 0.28 + cosine_sim * 0.25 + substr_sim * 0.12 + char_sim * 0.08 + edit_sim * 0.27
+        ngram_sim * _SIM_WEIGHTS["ngram"]
+        + cosine_sim * _SIM_WEIGHTS["cosine"]
+        + substr_sim * _SIM_WEIGHTS["substring"]
+        + char_sim * _SIM_WEIGHTS["char"]
+        + edit_sim * _SIM_WEIGHTS["edit"]
     )
 
     # 关键词重合增强：对中文 bigram 命中进行轻微提升
@@ -393,7 +431,7 @@ def _calculate_hybrid_similarity_cached(t1: str, t2: str) -> float:
 
     # ---- 否定词惩罚：在最终分数上应用 ----
     if has_negation:
-        score *= 0.25  # 否定词使语义反转，大幅降分
+        score *= _NEGATION_PENALTY  # 否定词使语义反转，大幅降分（系数可配置）
 
     return min(1.0, score)
 

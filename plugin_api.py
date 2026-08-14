@@ -449,6 +449,15 @@ class PluginAPI:
                 "is_favorite": bool(meta.get("is_favorite", 0)),
                 "use_count": meta.get("use_count", 0) or 0,
                 "last_used_at": meta.get("last_used_at", 0) or 0,
+                # v5 元数据列（WebUI 预览面板展示）
+                "width": meta.get("width"),
+                "height": meta.get("height"),
+                "format": meta.get("format"),
+                "bytes": meta.get("bytes"),
+                "add_method": meta.get("add_method"),
+                "reviewed_at": meta.get("reviewed_at"),
+                "source_url": meta.get("source_url"),
+                "original_name": meta.get("original_name"),
             }
         except ValueError:
             return None
@@ -743,6 +752,14 @@ class PluginAPI:
                 "source": str(row.get("source", "") or ""),
                 "review_status": str(row.get("review_status", "pending") or "pending"),
                 "created_at": int(row.get("created_at", 0) or 0),
+                # v5 元数据列（与正式库 item 对齐，供审核区展示）
+                "width": row.get("width"),
+                "height": row.get("height"),
+                "format": row.get("format"),
+                "bytes": row.get("bytes"),
+                "add_method": row.get("add_method"),
+                "source_url": row.get("source_url"),
+                "original_name": row.get("original_name"),
             }
         except (ValueError, TypeError):
             return None
@@ -859,8 +876,17 @@ class PluginAPI:
                 "created_at": int(time.time()),
                 "use_count": 0,
                 "last_used_at": 0,
+                "reviewed_at": int(time.time()),
                 "tags": list(row.get("tags", []) or []),
                 "scenes": list(row.get("scenes", []) or []),
+                # v5：从 pending 继承元数据（宽高/格式/字节/来源/入库方式）
+                "source_url": row.get("source_url"),
+                "original_name": row.get("original_name"),
+                "width": row.get("width"),
+                "height": row.get("height"),
+                "format": row.get("format"),
+                "bytes": row.get("bytes"),
+                "add_method": row.get("add_method"),
             }
             inserted = await db.insert_batch([emoji_entry])
             if not inserted:

@@ -50,6 +50,14 @@ class PluginConfig(BaseModel):
     enable_embedding_search: bool = True  # 启用嵌入向量检索；不可用时降级 BM25
     embedding_provider_id: str = ""  # 嵌入模型；留空则尝试框架首个 embedding provider
 
+    # === 智能选择：文字距离融合权重（见 _conf_schema.json _smart_section）===
+    sim_weight_ngram: float = 0.28  # n-gram Jaccard（语义词组重叠）
+    sim_weight_cosine: float = 0.25  # n-gram 词频余弦
+    sim_weight_substring: float = 0.12  # 子串包含匹配
+    sim_weight_char: float = 0.08  # 中文字符级 Jaccard（兜底）
+    sim_weight_edit: float = 0.27  # 编辑距离相似度
+    sim_negation_penalty: float = 0.25  # 否定词语义反转惩罚系数
+
     # === 自定义提示词 ===
     custom_meme_classification_prompt: str = ""
     custom_meme_classification_with_filter_prompt: str = ""

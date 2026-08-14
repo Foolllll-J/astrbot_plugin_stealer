@@ -13,10 +13,6 @@
             "description": "Настройки отправки",
             "hint": ""
         },
-        "_emotion_section": {
-            "description": "Распознавание эмоций",
-            "hint": ""
-        },
         "_model_section": {
             "description": "Настройки модели",
             "hint": ""
@@ -168,6 +164,34 @@
         "custom_meme_classification_with_filter_prompt": {
             "description": "Промпт классификации VLM (с модерацией)",
             "hint": "Используется при включённой модерации контента. Поддерживает плейсхолдер: {emotion_list} (список категорий). Оставьте пустым для использования промпта по умолчанию."
+        },
+        "_smart_section": {
+            "description": "Умный выбор: веса схожести текста",
+            "hint": ""
+        },
+        "sim_weight_ngram": {
+            "description": "Схожесть: вес n-грамм",
+            "hint": "Вес слияния Jaccard n-грамм (пересечение фраз)"
+        },
+        "sim_weight_cosine": {
+            "description": "Схожесть: вес косинуса",
+            "hint": "Вес косинусной схожести частот n-грамм"
+        },
+        "sim_weight_substring": {
+            "description": "Схожесть: вес подстроки",
+            "hint": "Вес совпадения по вхождению подстроки"
+        },
+        "sim_weight_char": {
+            "description": "Схожесть: вес символов",
+            "hint": "Вес Jaccard по иероглифам (запасной вариант)"
+        },
+        "sim_weight_edit": {
+            "description": "Схожесть: вес правок",
+            "hint": "Вес расстояния Левенштейна; для коротких слов рекомендуется выше"
+        },
+        "sim_negation_penalty": {
+            "description": "Штраф отрицания",
+            "hint": "При отрицании (напр. «не рад») итоговый балл умножается на коэффициент; 1 = без штрафа"
         }
     },
     "pages": {
@@ -188,6 +212,29 @@
             },
             "alerts": {
                 "pending_saved": "Изменения на модерации сохранены."
+            },
+            "fields": {
+                "category": "Категория",
+                "scope": "Область действия",
+                "use_count": "Использований",
+                "last_used": "Последнее использование",
+                "favorite": "Избранное",
+                "origin": "Происхождение",
+                "description": "Описание",
+                "tags": "Теги",
+                "scenes": "Сцены",
+                "created_at": "Время добавления",
+                "target_category": "Целевая категория",
+                "target_scope": "Целевая область",
+                "image_meta": "Изображение",
+                "added": "Способ добавления",
+                "reviewed_at": "Проверено",
+                "source": "URL источника",
+                "add_method_auto": "Автосбор",
+                "add_method_manual": "Вручную",
+                "add_method_llm": "Через LLM",
+                "add_method_api": "Через API",
+                "add_method_unknown": "Неизвестно"
             }
         }
     }

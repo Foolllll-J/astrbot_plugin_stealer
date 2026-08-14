@@ -13,12 +13,8 @@
             "description": "Send Settings",
             "hint": ""
         },
-        "_emotion_section": {
-            "description": "Emotion Recognition",
-            "hint": ""
-        },
         "_model_section": {
-            "description": "Model Configuration",
+            "description": "Models (vision / emotion / embedding)",
             "hint": ""
         },
         "_group_section": {
@@ -168,6 +164,34 @@
         "custom_meme_classification_with_filter_prompt": {
             "description": "VLM classification prompt (with filtering)",
             "hint": "Used when content moderation is enabled. Supports placeholder: {emotion_list} (category list). Leave blank to use the default prompt."
+        },
+        "sim_weight_ngram": {
+            "description": "Similarity: ngram weight",
+            "hint": "ngram Jaccard fusion weight"
+        },
+        "sim_weight_cosine": {
+            "description": "Similarity: cosine weight",
+            "hint": "ngram-frequency cosine fusion weight"
+        },
+        "sim_weight_substring": {
+            "description": "Similarity: substring weight",
+            "hint": "substring containment fusion weight"
+        },
+        "sim_weight_char": {
+            "description": "Similarity: char weight",
+            "hint": "Chinese char-level Jaccard fallback weight"
+        },
+        "sim_weight_edit": {
+            "description": "Similarity: edit weight",
+            "hint": "Levenshtein fusion weight"
+        },
+        "sim_negation_penalty": {
+            "description": "Negation penalty",
+            "hint": "final score multiplier on negation"
+        },
+        "_smart_section": {
+            "description": "Smart selection: text-distance fusion weights",
+            "hint": ""
         }
     },
     "pages": {
@@ -295,7 +319,16 @@
                 "scenes": "Scenes",
                 "created_at": "Added At",
                 "target_category": "Target Category",
-                "target_scope": "Target Scope"
+                "target_scope": "Target Scope",
+                "image_meta": "Image",
+                "added": "Added via",
+                "reviewed_at": "Reviewed",
+                "source": "Source URL",
+                "add_method_auto": "Auto collect",
+                "add_method_manual": "Manual upload",
+                "add_method_llm": "LLM upload",
+                "add_method_api": "API upload",
+                "add_method_unknown": "Unknown"
             },
             "units": {
                 "times": "times"

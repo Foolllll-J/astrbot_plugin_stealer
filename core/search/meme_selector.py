@@ -1,7 +1,6 @@
 import asyncio
 import random
 import re
-import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -28,14 +27,6 @@ class MemeSelector:
     # 选择器常量
     MAX_RECENT_USAGE = 10  # 最近使用记录最大数量
     MIN_RECENT_USAGE = 3  # 最近使用记录最小数量
-
-    # 相似度阈值常量（v2 n-gram 改进后适当降低阈值以提升召回率）
-    SIMILARITY_THRESHOLD = 0.45  # 模糊匹配相似度阈值
-    SMART_BM25_PREFILTER_LIMIT = 80  # 智能选择时 BM25 预召回上限
-    SMART_BM25_BONUS_WEIGHT = 0.2  # BM25 分数对最终打分的加权
-    SMART_FAST_PREFILTER_TOP_K = 120  # 轻量预筛后保留的候选上限
-    SMART_FAST_PREFILTER_MIN_CANDIDATES = 48  # 候选少于该值时跳过预筛
-    SMART_FAST_PREFILTER_FUZZY_RESERVE = 24  # 预筛时保留部分模糊候选，避免误杀
 
     def __init__(self, plugin_instance: Any):
         self.plugin = plugin_instance

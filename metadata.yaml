@@ -29,10 +29,11 @@ help: |
   - /meme blacklist <序号|文件名>：删除并加入黑名单
   - /meme scope <序号|文件名> <public|local>：设置表情包作用域
   - /meme rebuild_index：重建索引
+  - /meme tag_stats [N]：标签统计（高频/低频/零标签，打标质量体检）
 
   对话中 LLM 可自动调用 search_meme / send_meme / steal_meme 工具搜索、发送和收录表情包。
   WebUI：在插件详情页点击「表情管理」进入管理面板。
-version: 2.8.1
+version: 2.8.2
 support_platforms:
   - aiocqhttp
   - telegram

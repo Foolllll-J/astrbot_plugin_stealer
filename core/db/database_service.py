@@ -25,7 +25,7 @@ class DatabaseService:
     _RELATED_FETCH_CHUNK_SIZE = 400
 
     # 表结构版本，用于迁移检测
-    SCHEMA_VERSION = 4
+    SCHEMA_VERSION = 5
 
     def __init__(self, db_path: str | Path | None = None):
         """初始化数据库服务。
@@ -122,9 +122,14 @@ class DatabaseService:
                 if current_version < 4:
                     logger.info("[DB] migration: emoji_pending / emoji_embedding tables ready")
 
+                # v5: emoji/emoji_pending 元数据列 + pending 标签/场景关联表
+                # （关联表由 _create_tables 用 IF NOT EXISTS 创建）
+                if current_version < 5:
+                    self._migrate_v5(conn)
+
     def _create_tables(self, conn: sqlite3.Connection) -> None:
         """创建所有数据表。"""
-        # 主表：表情包元数据
+        # 主表：表情包元数据（v5 起含 reviewed_at 与图片元数据列）
         conn.execute("""
             CREATE TABLE IF NOT EXISTS emoji (
                 path TEXT PRIMARY KEY,
@@ -138,7 +143,15 @@ class DatabaseService:
                 created_at INTEGER DEFAULT 0,
                 use_count INTEGER DEFAULT 0,
                 last_used_at INTEGER DEFAULT 0,
-                is_favorite INTEGER DEFAULT 0
+                is_favorite INTEGER DEFAULT 0,
+                reviewed_at INTEGER,
+                source_url TEXT,
+                original_name TEXT,
+                width INTEGER,
+                height INTEGER,
+                format TEXT,
+                bytes INTEGER,
+                add_method TEXT
             )
         """)
 
@@ -170,6 +183,7 @@ class DatabaseService:
         """)
 
         # 待审核池：on_message 自动偷取先进 pending，人工审核通过后入库
+        # （v5 起含图片元数据列；tags_text/scenes_text 为废弃列，实际标签存关联表）
         conn.execute("""
             CREATE TABLE IF NOT EXISTS emoji_pending (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -184,12 +198,40 @@ class DatabaseService:
                 review_status TEXT DEFAULT 'pending',
                 created_at INTEGER DEFAULT 0,
                 tags_text TEXT,
-                scenes_text TEXT
+                scenes_text TEXT,
+                source_url TEXT,
+                original_name TEXT,
+                width INTEGER,
+                height INTEGER,
+                format TEXT,
+                bytes INTEGER,
+                add_method TEXT
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_created ON emoji_pending(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_category ON emoji_pending(category)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_hash ON emoji_pending(hash)")
+
+        # 待审核池标签/场景关联表（v5，与 emoji_tag/emoji_scene 同构，
+        # 取代 emoji_pending 的 tags_text/scenes_text 逗号拼接列）
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emoji_pending_tag (
+                path TEXT NOT NULL,
+                tag TEXT NOT NULL,
+                PRIMARY KEY (path, tag),
+                FOREIGN KEY (path) REFERENCES emoji_pending(path) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emoji_pending_scene (
+                path TEXT NOT NULL,
+                scene TEXT NOT NULL,
+                PRIMARY KEY (path, scene),
+                FOREIGN KEY (path) REFERENCES emoji_pending(path) ON DELETE CASCADE
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_tag_tag ON emoji_pending_tag(tag)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_scene_scene ON emoji_pending_scene(scene)")
 
         # 嵌入向量：审核通过入库时计算，检索阶段优先用向量召回，缺失则降级 BM25
         conn.execute("""
@@ -209,6 +251,119 @@ class DatabaseService:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_emoji_last_used ON emoji(last_used_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_tag_tag ON emoji_tag(tag)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_scene_scene ON emoji_scene(scene)")
+
+    # ── v5 迁移：元数据列 + pending 标签/场景关联表 ──
+    # 元数据列（emoji 与 emoji_pending 同构），供 WebUI 展示与统计
+    _META_COLUMNS: tuple[tuple[str, str], ...] = (
+        ("source_url", "TEXT"),      # 图片来源 URL（尽力获取，可能为空）
+        ("original_name", "TEXT"),   # 原始文件名
+        ("width", "INTEGER"),        # 图片宽度（像素）
+        ("height", "INTEGER"),       # 图片高度（像素）
+        ("format", "TEXT"),          # 图片格式 png/jpg/gif/webp
+        ("bytes", "INTEGER"),        # 文件字节数
+        ("add_method", "TEXT"),      # 入库方式 auto/manual/llm/api
+    )
+    # 元数据标量字段名（供 INSERT/UPDATE 透传）
+    _EMOJI_SCALAR_COLUMNS: frozenset[str] = frozenset(
+        {
+            "hash",
+            "phash",
+            "category",
+            "desc",
+            "source",
+            "origin_target",
+            "scope_mode",
+            "created_at",
+            "use_count",
+            "last_used_at",
+            "is_favorite",
+            "reviewed_at",
+            *(col for col, _ in _META_COLUMNS),
+        }
+    )
+    # INSERT 语句用列清单（顺序与 _INSERT_EMOJI_SQL 的 VALUES 占位对应）
+    _EMOJI_INSERT_COLUMNS: tuple[str, ...] = (
+        "path",
+        "hash",
+        "phash",
+        "category",
+        "desc",
+        "source",
+        "origin_target",
+        "scope_mode",
+        "created_at",
+        "use_count",
+        "last_used_at",
+        "is_favorite",
+        "reviewed_at",
+        *(col for col, _ in _META_COLUMNS),
+    )
+    _INSERT_EMOJI_SQL: str = (
+        "INSERT OR REPLACE INTO emoji ("
+        + ", ".join(_EMOJI_INSERT_COLUMNS)
+        + ") VALUES ("
+        + ", ".join("?" * len(_EMOJI_INSERT_COLUMNS))
+        + ")"
+    )
+    # 待审核池 INSERT 列清单（含元数据列，不含 reviewed_at）
+    _PENDING_INSERT_COLUMNS: tuple[str, ...] = (
+        "path",
+        "hash",
+        "phash",
+        "category",
+        "desc",
+        "source",
+        "origin_target",
+        "scope_mode",
+        "review_status",
+        "created_at",
+        "tags_text",
+        "scenes_text",
+        *(col for col, _ in _META_COLUMNS),
+    )
+
+    def _migrate_v5(self, conn: sqlite3.Connection) -> None:
+        """v4 -> v5：为 emoji/emoji_pending 添加元数据列，并把旧 tags_text/scenes_text 拆入关联表。"""
+        for col, ddl in self._META_COLUMNS:
+            for table in ("emoji", "emoji_pending"):
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" not in str(e).lower():
+                        raise
+        try:
+            conn.execute("ALTER TABLE emoji ADD COLUMN reviewed_at INTEGER")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+
+        # 拆旧逗号拼接列到关联表（幂等：重复行用 INSERT OR IGNORE 跳过）
+        rows = conn.execute(
+            "SELECT path, tags_text, scenes_text FROM emoji_pending"
+        ).fetchall()
+        migrated_tags = 0
+        migrated_scenes = 0
+        for row in rows:
+            path = row["path"]
+            for tag in self._split_multi(row["tags_text"]):
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO emoji_pending_tag (path, tag) VALUES (?, ?)",
+                    (path, tag),
+                )
+                migrated_tags += cur.rowcount
+            for scene in self._split_multi(row["scenes_text"]):
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO emoji_pending_scene (path, scene) VALUES (?, ?)",
+                    (path, scene),
+                )
+                migrated_scenes += cur.rowcount
+
+        # 清空旧列（新代码不再写入；读取时以关联表为准）
+        conn.execute("UPDATE emoji_pending SET tags_text = '', scenes_text = ''")
+        logger.info(
+            f"[DB] 迁移完成 (v5): 元数据列就绪，pending 标签/场景拆分 "
+            f"{migrated_tags}/{migrated_scenes} 条"
+        )
 
     @staticmethod
     def _normalize_multi_value(values: Any) -> list[str]:
@@ -446,19 +601,7 @@ class DatabaseService:
             return await asyncio.to_thread(self._update_path_sync, path, updates)
 
     def _update_path_sync(self, path: str, updates: dict[str, Any]) -> bool:
-        scalar_fields = {
-            "hash",
-            "phash",
-            "category",
-            "desc",
-            "source",
-            "origin_target",
-            "scope_mode",
-            "created_at",
-            "use_count",
-            "last_used_at",
-            "is_favorite",
-        }
+        scalar_fields = self._EMOJI_SCALAR_COLUMNS
         scalar_updates = {
             key: self._coerce_int_flag(value) if key == "is_favorite" else value
             for key, value in updates.items()
@@ -540,27 +683,17 @@ class DatabaseService:
                 scalar = {
                     key: self._coerce_int_flag(value) if key == "is_favorite" else value
                     for key, value in updates.items()
-                    if key
-                    in {
-                        "hash",
-                        "phash",
-                        "desc",
-                        "source",
-                        "origin_target",
-                        "scope_mode",
-                        "created_at",
-                        "use_count",
-                        "last_used_at",
-                        "is_favorite",
-                    }
+                    if key in self._EMOJI_SCALAR_COLUMNS
                 }
 
                 conn.execute(
                     """
                     INSERT INTO emoji
                     (path, hash, phash, category, desc, source, origin_target,
-                     scope_mode, created_at, use_count, last_used_at, is_favorite)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     scope_mode, created_at, use_count, last_used_at, is_favorite,
+                     reviewed_at, source_url, original_name, width, height, format,
+                     bytes, add_method)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         new_path,
@@ -575,6 +708,14 @@ class DatabaseService:
                         scalar.get("use_count", row["use_count"]),
                         scalar.get("last_used_at", row["last_used_at"]),
                         scalar.get("is_favorite", row["is_favorite"]),
+                        scalar.get("reviewed_at", row["reviewed_at"]),
+                        scalar.get("source_url", row["source_url"]),
+                        scalar.get("original_name", row["original_name"]),
+                        scalar.get("width", row["width"]),
+                        scalar.get("height", row["height"]),
+                        scalar.get("format", row["format"]),
+                        scalar.get("bytes", row["bytes"]),
+                        scalar.get("add_method", row["add_method"]),
                     ),
                 )
                 if "tags" in updates:
@@ -650,14 +791,9 @@ class DatabaseService:
                     if not path:
                         continue
 
-                    # 插入主记录
+                    # 插入主记录（v5：含元数据列与 reviewed_at）
                     conn.execute(
-                        """
-                        INSERT OR REPLACE INTO emoji
-                        (path, hash, phash, category, desc, source, origin_target,
-                         scope_mode, created_at, use_count, last_used_at, is_favorite)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                        self._INSERT_EMOJI_SQL,
                         (
                             path,
                             emoji.get("hash", ""),
@@ -671,6 +807,14 @@ class DatabaseService:
                             emoji.get("use_count", 0),
                             emoji.get("last_used_at", 0),
                             int(bool(emoji.get("is_favorite", 0))),
+                            emoji.get("reviewed_at"),
+                            emoji.get("source_url"),
+                            emoji.get("original_name"),
+                            emoji.get("width"),
+                            emoji.get("height"),
+                            emoji.get("format"),
+                            emoji.get("bytes"),
+                            emoji.get("add_method"),
                         ),
                     )
 
@@ -804,12 +948,7 @@ class DatabaseService:
                     meta = desired_index[path]
                     now = int(time.time())
                     conn.execute(
-                        """
-                            INSERT INTO emoji
-                            (path, hash, phash, category, desc, source, origin_target,
-                             scope_mode, created_at, use_count, last_used_at, is_favorite)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
+                        self._INSERT_EMOJI_SQL,
                         (
                             path,
                             meta.get("hash", ""),
@@ -823,6 +962,14 @@ class DatabaseService:
                             meta.get("use_count", 0),
                             meta.get("last_used_at", 0),
                             int(bool(meta.get("is_favorite", 0))),
+                            meta.get("reviewed_at"),
+                            meta.get("source_url"),
+                            meta.get("original_name"),
+                            meta.get("width"),
+                            meta.get("height"),
+                            meta.get("format"),
+                            meta.get("bytes"),
+                            meta.get("add_method"),
                         ),
                     )
 
@@ -840,19 +987,7 @@ class DatabaseService:
                                 (path, scene),
                             )
 
-                scalar_fields = (
-                    "hash",
-                    "phash",
-                    "category",
-                    "desc",
-                    "source",
-                    "origin_target",
-                    "scope_mode",
-                    "created_at",
-                    "use_count",
-                    "last_used_at",
-                    "is_favorite",
-                )
+                scalar_fields = tuple(self._EMOJI_SCALAR_COLUMNS)
 
                 for path in desired_paths & existing_paths:
                     meta = desired_index[path]
@@ -969,13 +1104,59 @@ class DatabaseService:
             ).fetchall()
             tags_count = conn.execute("SELECT COUNT(*) as cnt FROM emoji_tag").fetchone()["cnt"]
             scenes_count = conn.execute("SELECT COUNT(*) as cnt FROM emoji_scene").fetchone()["cnt"]
+            pending_count = conn.execute(
+                "SELECT COUNT(*) as cnt FROM emoji_pending"
+            ).fetchone()["cnt"]
 
             return {
                 "total_emojis": total,
                 "total_tags": tags_count,
                 "total_scenes": scenes_count,
+                "pending_count": pending_count,
                 "categories": {r["category"]: r["cnt"] for r in categories},
                 "db_size_bytes": self._db_path.stat().st_size if self._db_path.exists() else 0,
+            }
+
+    def get_tag_stats(self, top_n: int = 15) -> dict[str, Any]:
+        """标签/场景统计（供 /meme tag_stats 命令与 WebUI 使用）。
+
+        Returns:
+            dict: {
+                top_tags: [{tag, count}]          按使用次数降序
+                single_use_tags: [tag]            仅出现 1 次的标签（疑似噪声/拼写差异）
+                zero_tag_count: int               无任何标签的表情数量
+                total_emojis: int                 表情总数
+                total_with_tags: int              有标签的表情数
+                top_scenes: [{scene, count}]      场景统计（同标签口径）
+            }
+        """
+        with self._get_connection() as conn:
+            top_tags = conn.execute(
+                "SELECT tag, COUNT(*) as cnt FROM emoji_tag "
+                "GROUP BY tag ORDER BY cnt DESC, tag ASC LIMIT ?",
+                (int(top_n),),
+            ).fetchall()
+            single = conn.execute(
+                "SELECT tag FROM emoji_tag GROUP BY tag HAVING COUNT(*) = 1 ORDER BY tag LIMIT 20"
+            ).fetchall()
+            zero = conn.execute(
+                "SELECT COUNT(*) as cnt FROM emoji e WHERE NOT EXISTS "
+                "(SELECT 1 FROM emoji_tag t WHERE t.path = e.path)"
+            ).fetchone()
+            total = conn.execute("SELECT COUNT(*) as cnt FROM emoji").fetchone()
+            top_scenes = conn.execute(
+                "SELECT scene, COUNT(*) as cnt FROM emoji_scene "
+                "GROUP BY scene ORDER BY cnt DESC, scene ASC LIMIT ?",
+                (int(top_n),),
+            ).fetchall()
+            return {
+                "top_tags": [{"tag": r["tag"], "count": r["cnt"]} for r in top_tags],
+                "single_use_tags": [r["tag"] for r in single],
+                "zero_tag_count": int(zero["cnt"] if zero else 0),
+                "total_emojis": int(total["cnt"] if total else 0),
+                "total_with_tags": int(total["cnt"] if total else 0)
+                - int(zero["cnt"] if zero else 0),
+                "top_scenes": [{"scene": r["scene"], "count": r["cnt"]} for r in top_scenes],
             }
 
     def count_created_since(self, created_at: int | float) -> int:
@@ -1099,7 +1280,9 @@ class DatabaseService:
             data_sql = f"""
                 SELECT e.path, e.hash, e.category, e.desc, e.scope_mode,
                        e.origin_target, e.created_at, e.use_count, e.last_used_at,
-                       e.is_favorite
+                       e.is_favorite, e.reviewed_at,
+                       e.source_url, e.original_name, e.width, e.height,
+                       e.format, e.bytes, e.add_method
                 FROM emoji e {where_sql}
                 ORDER BY {order_sql}
                 LIMIT ? OFFSET ?
@@ -1129,10 +1312,6 @@ class DatabaseService:
             return images, total, category_counts
 
     # ── 待审核池 (emoji_pending) CRUD ──
-
-    @staticmethod
-    def _join_multi(values: Any) -> str:
-        return ",".join(str(v).strip() for v in DatabaseService._normalize_multi_value(values))
 
     @staticmethod
     def _split_multi(text: Any) -> list[str]:
@@ -1166,11 +1345,10 @@ class DatabaseService:
         with self._get_connection() as conn:
             try:
                 cur = conn.execute(
-                    """
+                    f"""
                     INSERT INTO emoji_pending
-                    (path, hash, phash, category, desc, source, origin_target,
-                     scope_mode, review_status, created_at, tags_text, scenes_text)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                    ({", ".join(self._PENDING_INSERT_COLUMNS)})
+                    VALUES ({", ".join("?" * len(self._PENDING_INSERT_COLUMNS))})
                     """,
                     (
                         meta.get("path"),
@@ -1181,11 +1359,31 @@ class DatabaseService:
                         meta.get("source"),
                         meta.get("origin_target"),
                         meta.get("scope_mode", "public"),
+                        "pending",
                         created_at,
-                        self._join_multi(meta.get("tags")),
-                        self._join_multi(meta.get("scenes")),
+                        "",  # tags_text 已废弃（v5 改关联表）
+                        "",  # scenes_text 已废弃
+                        meta.get("source_url"),
+                        meta.get("original_name"),
+                        meta.get("width"),
+                        meta.get("height"),
+                        meta.get("format"),
+                        meta.get("bytes"),
+                        meta.get("add_method"),
                     ),
                 )
+                path = str(meta.get("path") or "")
+                # 标签/场景写入关联表（与正式表 emoji_tag/emoji_scene 同构）
+                for tag in self._normalize_multi_value(meta.get("tags")):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO emoji_pending_tag (path, tag) VALUES (?, ?)",
+                        (path, tag),
+                    )
+                for scene in self._normalize_multi_value(meta.get("scenes")):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO emoji_pending_scene (path, scene) VALUES (?, ?)",
+                        (path, scene),
+                    )
                 return int(cur.lastrowid) if cur.lastrowid else None
             except sqlite3.IntegrityError:
                 # 仅作 pending 内去重：同路径已存在说明该图已在池中
@@ -1209,9 +1407,13 @@ class DatabaseService:
         if search_query:
             search_pattern = f"%{search_query}%"
             where_clauses.append(
-                "(p.desc LIKE ? OR p.tags_text LIKE ? OR p.scenes_text LIKE ?"
-                " OR p.category LIKE ? OR p.hash LIKE ?"
-                " OR p.origin_target LIKE ? OR p.source LIKE ? OR p.path LIKE ?)"
+                "(p.desc LIKE ? OR p.category LIKE ? OR p.hash LIKE ?"
+                " OR p.origin_target LIKE ? OR p.source LIKE ? OR p.path LIKE ?"
+                " OR EXISTS("
+                "SELECT 1 FROM emoji_pending_tag t WHERE t.path = p.path AND t.tag LIKE ?"
+                ") OR EXISTS("
+                "SELECT 1 FROM emoji_pending_scene s WHERE s.path = p.path AND s.scene LIKE ?"
+                "))"
             )
             params.extend([search_pattern] * 8)
 
@@ -1243,7 +1445,9 @@ class DatabaseService:
                 f"""
                 SELECT p.id, p.path, p.hash, p.phash, p.category, p.desc,
                        p.source, p.origin_target, p.scope_mode, p.review_status,
-                       p.created_at, p.tags_text, p.scenes_text
+                       p.created_at, p.tags_text, p.scenes_text,
+                       p.source_url, p.original_name, p.width, p.height,
+                       p.format, p.bytes, p.add_method
                 FROM emoji_pending p {where_sql}
                 ORDER BY p.created_at DESC, p.id DESC
                 LIMIT ? OFFSET ?
@@ -1252,15 +1456,32 @@ class DatabaseService:
             ).fetchall()
 
             items: list[dict[str, Any]] = []
-            for row in rows:
-                item = dict(row)
-                item["tags"] = self._split_multi(item.pop("tags_text", ""))
-                item["scenes"] = self._split_multi(item.pop("scenes_text", ""))
-                items.append(item)
+            if rows:
+                paths = [r["path"] for r in rows]
+                tags_map = self._load_related_map(
+                    conn, table="emoji_pending_tag", value_column="tag", paths=paths
+                )
+                scenes_map = self._load_related_map(
+                    conn, table="emoji_pending_scene", value_column="scene", paths=paths
+                )
+                for row in rows:
+                    item = dict(row)
+                    tags = tags_map.get(row["path"], [])
+                    scenes = scenes_map.get(row["path"], [])
+                    # 兼容旧数据：关联表为空时回退到旧逗号列
+                    if not tags and item.get("tags_text"):
+                        tags = self._split_multi(item.pop("tags_text", ""))
+                    if not scenes and item.get("scenes_text"):
+                        scenes = self._split_multi(item.pop("scenes_text", ""))
+                    item.pop("tags_text", None)
+                    item.pop("scenes_text", None)
+                    item["tags"] = tags
+                    item["scenes"] = scenes
+                    items.append(item)
             return items, total, category_counts
 
     def get_pending(self, pending_id: int) -> dict[str, Any] | None:
-        """获取单条待审核记录（含拆分后的 tags/scenes）。"""
+        """获取单条待审核记录（含拆分后的 tags/scenes，来自关联表）。"""
         with self._get_connection() as conn:
             row = conn.execute(
                 "SELECT * FROM emoji_pending WHERE id = ?", (pending_id,)
@@ -1268,8 +1489,28 @@ class DatabaseService:
             if not row:
                 return None
             item = dict(row)
-            item["tags"] = self._split_multi(item.pop("tags_text", ""))
-            item["scenes"] = self._split_multi(item.pop("scenes_text", ""))
+            path = str(item.get("path") or "")
+            tags = [
+                r["tag"]
+                for r in conn.execute(
+                    "SELECT tag FROM emoji_pending_tag WHERE path = ? ORDER BY rowid", (path,)
+                ).fetchall()
+            ]
+            scenes = [
+                r["scene"]
+                for r in conn.execute(
+                    "SELECT scene FROM emoji_pending_scene WHERE path = ? ORDER BY rowid", (path,)
+                ).fetchall()
+            ]
+            # 兼容旧数据：关联表为空时回退到旧逗号列
+            if not tags:
+                tags = self._split_multi(item.pop("tags_text", ""))
+            if not scenes:
+                scenes = self._split_multi(item.pop("scenes_text", ""))
+            item.pop("tags_text", None)
+            item.pop("scenes_text", None)
+            item["tags"] = tags
+            item["scenes"] = scenes
             return item
 
     def get_pending_by_hash(self, hash_val: str) -> dict[str, Any] | None:
@@ -1319,11 +1560,9 @@ class DatabaseService:
         if not clean_fields:
             return None
 
-        # tags/scenes 需要 join_multi
-        if "tags" in clean_fields:
-            clean_fields["tags_text"] = self._join_multi(clean_fields.pop("tags"))
-        if "scenes" in clean_fields:
-            clean_fields["scenes_text"] = self._join_multi(clean_fields.pop("scenes"))
+        # tags/scenes 拆分出来走关联表（不再写 tags_text/scenes_text 列）
+        new_tags = clean_fields.pop("tags", None)
+        new_scenes = clean_fields.pop("scenes", None)
 
         # scope_mode 兜底
         if "scope_mode" in clean_fields:
@@ -1343,19 +1582,24 @@ class DatabaseService:
 
         async with self._write_lock:
             return await asyncio.to_thread(
-                self._update_pending_sync, pending_id, clean_fields
+                self._update_pending_sync, pending_id, clean_fields, new_tags, new_scenes
             )
 
     def _update_pending_sync(
-        self, pending_id: int, clean_fields: dict[str, Any]
+        self,
+        pending_id: int,
+        clean_fields: dict[str, Any],
+        new_tags: Any = None,
+        new_scenes: Any = None,
     ) -> dict[str, Any] | None:
-        set_clause = ", ".join(f"{col} = ?" for col in clean_fields.keys())
-        params: list[Any] = list(clean_fields.values()) + [pending_id]
         with self._get_connection() as conn:
-            conn.execute(
-                f"UPDATE emoji_pending SET {set_clause} WHERE id = ?",
-                params,
-            )
+            if clean_fields:
+                set_clause = ", ".join(f"{col} = ?" for col in clean_fields.keys())
+                params: list[Any] = list(clean_fields.values()) + [pending_id]
+                conn.execute(
+                    f"UPDATE emoji_pending SET {set_clause} WHERE id = ?",
+                    params,
+                )
             # 注：SQLite 对值未变的 no-op UPDATE 会返回 rowcount=0，
             # 不能据此判断"行不存在"。统一回查一次行存在性。
             row = conn.execute(
@@ -1363,9 +1607,46 @@ class DatabaseService:
             ).fetchone()
             if not row:
                 return None
+
+            path = str(row["path"] or "")
+            # 标签/场景写关联表（全量替换，与正式表 update 语义一致）
+            if new_tags is not None:
+                conn.execute("DELETE FROM emoji_pending_tag WHERE path = ?", (path,))
+                for tag in self._normalize_multi_value(new_tags):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO emoji_pending_tag (path, tag) VALUES (?, ?)",
+                        (path, tag),
+                    )
+            if new_scenes is not None:
+                conn.execute("DELETE FROM emoji_pending_scene WHERE path = ?", (path,))
+                for scene in self._normalize_multi_value(new_scenes):
+                    conn.execute(
+                        "INSERT OR IGNORE INTO emoji_pending_scene (path, scene) VALUES (?, ?)",
+                        (path, scene),
+                    )
+
             item = dict(row)
-            item["tags"] = self._split_multi(item.pop("tags_text", ""))
-            item["scenes"] = self._split_multi(item.pop("scenes_text", ""))
+            tags = [
+                r["tag"]
+                for r in conn.execute(
+                    "SELECT tag FROM emoji_pending_tag WHERE path = ? ORDER BY rowid", (path,)
+                ).fetchall()
+            ]
+            scenes = [
+                r["scene"]
+                for r in conn.execute(
+                    "SELECT scene FROM emoji_pending_scene WHERE path = ? ORDER BY rowid", (path,)
+                ).fetchall()
+            ]
+            # 兼容旧数据：关联表为空时回退到旧逗号列
+            if not tags:
+                tags = self._split_multi(item.pop("tags_text", ""))
+            if not scenes:
+                scenes = self._split_multi(item.pop("scenes_text", ""))
+            item.pop("tags_text", None)
+            item.pop("scenes_text", None)
+            item["tags"] = tags
+            item["scenes"] = scenes
             return item
 
     def delete_pending(self, pending_id: int) -> dict[str, Any] | None:

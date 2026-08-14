@@ -360,6 +360,26 @@ class Main(Star):
         """将更新字典写回 PluginConfig。"""
         for k, v in config_dict.items():
             setattr(self.plugin_config, k, v)
+        self._sync_similarity_weights()
+
+    def _sync_similarity_weights(self) -> None:
+        """把文字距离融合权重同步到 text_similarity 模块（魔法数字 → 配置项）。"""
+        try:
+            from .core.search import text_similarity
+
+            cfg = self.plugin_config
+            text_similarity.configure_similarity(
+                weights={
+                    "ngram": cfg.sim_weight_ngram,
+                    "cosine": cfg.sim_weight_cosine,
+                    "substring": cfg.sim_weight_substring,
+                    "char": cfg.sim_weight_char,
+                    "edit": cfg.sim_weight_edit,
+                },
+                negation_penalty=cfg.sim_negation_penalty,
+            )
+        except Exception as e:
+            logger.warning(f"[Config] 同步相似度权重失败: {e}")
 
     def _sync_image_processor_from_runtime(self) -> None:
         cfg = self.plugin_config
@@ -539,6 +559,13 @@ class Main(Star):
     async def status(self, event: AstrMessageEvent):
         """查看插件运行状态和表情包统计信息。"""
         async for result in self.command_handler.status(event):
+            yield result
+
+    @filter.permission_type(PermissionType.ADMIN)
+    @meme.command("tag_stats")
+    async def tag_stats(self, event: AstrMessageEvent, limit: str = ""):
+        """标签/场景统计：高频标签、低频噪声标签、零标签条目（打标质量体检）。用法: /meme tag_stats [N]"""
+        async for result in self.command_handler.tag_stats(event, limit):
             yield result
 
     @filter.permission_type(PermissionType.ADMIN)
@@ -1325,6 +1352,7 @@ class Main(Star):
             await self._migrate_blacklist_to_db()
             await self.maintenance.run_startup_cleanup()
             self._sync_image_processor_from_runtime()
+            self._sync_similarity_weights()  # 启动时把持久化的文字距离权重同步到 text_similarity 模块
             self.maintenance.start_periodic_tasks()
 
             # 初始化嵌入向量服务 + 回填旧数据（仅在开启嵌入检索时）

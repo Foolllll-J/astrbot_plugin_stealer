@@ -58,6 +58,42 @@
     "default": false,
     "hint": "仅作为审核服务异常时的策略提示。明确审核不通过的图片仍不会入库。"
   },
+  "_model_section": {
+    "description": "=== 模型配置（视觉 / 情绪分析 / 嵌入检索）===",
+    "type": "text",
+    "invisible": true
+  },
+  "vision_provider_id": {
+    "description": "视觉模型",
+    "type": "string",
+    "hint": "用于图片分类。留空则自动使用 AstrBot 全局配置的图片描述模型（default_image_caption_provider_id）。",
+    "_special": "select_provider"
+  },
+  "enable_natural_emotion_analysis": {
+    "description": "情绪识别模式",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后使用轻量模型分析 LLM 回复文本的语义情绪，不修改 LLM 回复内容。关闭后使用被动标签模式（LLM 在回复中插入 && 情绪标签，会修改回复内容）。切换模式后建议使用 /reset 清除对话上下文。"
+  },
+  "emotion_analysis_provider_id": {
+    "description": "情绪分析专用模型",
+    "type": "string",
+    "hint": "留空则使用当前会话模型。小参数量模型即可胜任，建议使用轻量免费模型以降低延迟和消耗。",
+    "_special": "select_provider",
+    "default": ""
+  },
+  "enable_embedding_search": {
+    "description": "启用嵌入向量检索",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后使用嵌入向量（FaissVecDB）按语义相似度召回表情包。关闭则始终使用关键词（BM25）检索。开启后需在下方的嵌入模型 ID 中配置，否则自动降级为关键词检索。"
+  },
+  "embedding_provider_id": {
+    "description": "嵌入模型 ID",
+    "type": "string",
+    "default": "",
+    "hint": "用于生成表情包语义向量的嵌入模型。留空则自动使用 AstrBot 首个可用的 Embedding Provider。在 AstrBot 管理后台 → LLM 配置中可查看已配置的 Embedding 模型 ID（通常以 _embedding 结尾，如 openai_embedding、qwen_embedding 等）。此字段填写的是 Embedding 模型 ID，不是聊天模型或视觉模型 ID。"
+  },
   "_send_section": {
     "description": "=== 发送设置 ===",
     "type": "text",
@@ -138,40 +174,76 @@
     "default": true,
     "hint": "开启后使用综合评分（多样性 + 匹配度 + 相似度）选出最合适的表情包。关闭则随机选择（仍会避免短期重复）。"
   },
-  "_emotion_section": {
-    "description": "=== 情绪识别 ===",
+  "_smart_section": {
+    "description": "=== 智能选择：文字距离融合权重 ===",
     "type": "text",
     "invisible": true
   },
-  "enable_natural_emotion_analysis": {
-    "description": "情绪识别模式",
-    "type": "bool",
-    "default": true,
-    "hint": "开启后使用轻量模型分析 LLM 回复文本的语义情绪，不修改 LLM 回复内容。关闭后使用被动标签模式（LLM 在回复中插入 && 情绪标签，会修改回复内容）。切换模式后建议使用 /reset 清除对话上下文。"
+  "sim_weight_ngram": {
+    "description": "相似度-词组重叠权重（ngram）",
+    "type": "float",
+    "default": 0.28,
+    "slider": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    "hint": "混合相似度中 n-gram Jaccard（语义词组重叠）的融合权重。调大则更看重词组重叠，调小则更依赖其他策略。"
   },
-  "emotion_analysis_provider_id": {
-    "description": "情绪分析专用模型",
-    "type": "string",
-    "hint": "留空则使用当前会话模型。小参数量模型即可胜任，建议使用轻量免费模型以降低延迟和消耗。",
-    "_special": "select_provider",
-    "default": ""
+  "sim_weight_cosine": {
+    "description": "相似度-词频余弦权重",
+    "type": "float",
+    "default": 0.25,
+    "slider": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    "hint": "混合相似度中 n-gram 词频余弦的融合权重。"
   },
-  "emotion_analysis_prompt": {
-    "description": "情绪分析提示词",
-    "type": "text",
-    "default": "你是对话情绪分类器。请根据对话语境判断回复的情绪，并从下列分类中选择一个：{emotion_list}\n\n任务边界：\n1. 只分类回复的情绪，不分类用户消息。\n2. 用户消息仅用于帮助理解回复的语气与立场。\n\n分类规则：\n1. 负面情绪优先细分：愤怒→angry，无奈/叹气→sigh，震惊到无语→dumb，悲伤→sad，不解→confused。\n2. `troll` 仅用于明显阴阳怪气、挑衅、嘲讽、故意拱火语气。\n3. 普通吐槽、拒绝、抱怨、冷淡，不要判为 `troll`。\n4. 证据不足时选择最保守、最贴近字面语气的分类。\n5. 无明显情绪时输出 none。\n\n用户消息：{user_message}\n回复：{llm_reply}\n\n输出要求：\n- 只能输出一个英文分类名\n- 不能输出解释、标点、代码块或其他文字",
-    "hint": "分析 LLM 回复文本的情绪，决定发什么类型的表情包。支持占位符：{emotion_list}（分类列表）、{llm_reply}（LLM 回复文本）、{user_message}（用户原始消息，可能为空）。为空时使用默认提示词。"
+  "sim_weight_substring": {
+    "description": "相似度-子串匹配权重",
+    "type": "float",
+    "default": 0.12,
+    "slider": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    "hint": "混合相似度中子串包含匹配的融合权重。"
   },
-  "_model_section": {
-    "description": "=== 模型配置 ===",
-    "type": "text",
-    "invisible": true
+  "sim_weight_char": {
+    "description": "相似度-字符级权重",
+    "type": "float",
+    "default": 0.08,
+    "slider": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    "hint": "混合相似度中中文字符级 Jaccard（兜底召回）的融合权重。"
   },
-  "vision_provider_id": {
-    "description": "视觉模型",
-    "type": "string",
-    "hint": "用于图片分类。留空则自动使用 AstrBot 全局配置的图片描述模型（default_image_caption_provider_id）。",
-    "_special": "select_provider"
+  "sim_weight_edit": {
+    "description": "相似度-编辑距离权重",
+    "type": "float",
+    "default": 0.27,
+    "slider": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    "hint": "混合相似度中编辑距离的融合权重。短情绪词匹配场景建议保持较高。"
+  },
+  "sim_negation_penalty": {
+    "description": "否定词惩罚系数",
+    "type": "float",
+    "default": 0.25,
+    "slider": {
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01
+    },
+    "hint": "关键词前带否定词（如「不开心」）时语义反转，最终分数乘以该系数。设为 1 表示不惩罚。"
   },
   "_group_section": {
     "description": "=== 目标过滤 ===",
@@ -279,18 +351,6 @@
     "default": true,
     "hint": "开启后自动偷取的图片进入「待审核池」，需在 WebUI 审核区人工通过后才正式入库。关闭后跳过审核，自动偷取的图片直接入库分类，请配合内容审核开关使用以避免低质量图片污染图库。"
   },
-  "enable_embedding_search": {
-    "description": "启用嵌入向量检索",
-    "type": "bool",
-    "default": true,
-    "hint": "开启后使用嵌入向量（FaissVecDB）按语义相似度召回表情包。关闭则始终使用关键词（BM25）检索。开启后需在下方的嵌入模型 ID 中配置，否则自动降级为关键词检索。"
-  },
-  "embedding_provider_id": {
-    "description": "嵌入模型 ID",
-    "type": "string",
-    "default": "",
-    "hint": "用于生成表情包语义向量的嵌入模型。留空则自动使用 AstrBot 首个可用的 Embedding Provider。在 AstrBot 管理后台 → LLM 配置中可查看已配置的 Embedding 模型 ID（通常以 _embedding 结尾，如 openai_embedding、qwen_embedding 等）。此字段填写的是 Embedding 模型 ID，不是聊天模型或视觉模型 ID。"
-  },
   "_advanced_section": {
     "description": "=== 高级配置 ===",
     "type": "text",
@@ -307,5 +367,11 @@
     "type": "text",
     "default": "<role>\n你是中文互联网表情包审核与分类专家。\n</role>\n\n<task>\n第一步审核内容是否合规，第二步分类。\n</task>\n\n<content_filter>\n裸露色情、暴力血腥、政治敏感、广告营销时，只输出：{\"approved\": false, \"reason\": \"审核不通过\"}\n</content_filter>\n\n<categories>\n{emotion_list}\n</categories>\n\n<classification_guide>\n- happy/sad/angry/cry/fear: 表达明确的情绪状态\n- surprised/confused: 对某事感到意外或不解\n- shy/embarrassed: 社交场合的羞涩或窘迫\n- love/thank: 正向情感表达\n- tired/sigh: 疲惫、无奈、摆烂\n- troll: 阴阳怪气、刻意搞怪、发癫\n- dumb: 真的无语、傻眼、被震惊到说不出话\n- excitement: 激动、亢奋\n- disgust: 嫌弃、厌恶\n</classification_guide>\n\n<important>\ntroll 用于阴阳怪气/刻意搞怪，不是搞笑表情的默认分类。\ndumb 用于真的无语/傻眼，不是看起来有点呆的分类。\n优先考虑图片主体的表情和情绪，而非场景的幽默感。\n只能选择一个最匹配的分类。\n无论审核是否通过，都只能输出一个 JSON 对象，不要添加“审核通过：”“结果：”或 markdown 代码块。\n</important>\n\n<output_format>\n只输出 JSON，不要有任何其他文字。格式如下：\n审核通过：{\"approved\": true, \"category\": \"分类名称\", \"tags\": [\"标签1\", \"标签2\"], \"description\": \"画面描述（15字以内）\", \"scenes\": [\"场景1\", \"场景2\"]}\n审核不通过：{\"approved\": false, \"reason\": \"审核不通过\"}\n请注意，上面两行只是说明审核通过和不通过时各自应该输出的 JSON 结构，实际回复时不要输出“审核通过：”或“审核不通过：”这几个字。\n</output_format>\n\n<example>\n{\"approved\": true, \"category\": \"surprised\", \"tags\": [\"震惊\", \"瞪眼\"], \"description\": \"卡通猫瞪大眼睛\", \"scenes\": [\"惊讶时刻\"]}\n</example>",
     "hint": "开启内容审核时使用的 VLM 分类提示词。支持占位符：{emotion_list}（分类列表）。为空时使用默认提示词。"
+  },
+  "emotion_analysis_prompt": {
+    "description": "情绪分析提示词",
+    "type": "text",
+    "default": "你是对话情绪分类器。请根据对话语境判断回复的情绪，并从下列分类中选择一个：{emotion_list}\n\n任务边界：\n1. 只分类回复的情绪，不分类用户消息。\n2. 用户消息仅用于帮助理解回复的语气与立场。\n\n分类规则：\n1. 负面情绪优先细分：愤怒→angry，无奈/叹气→sigh，震惊到无语→dumb，悲伤→sad，不解→confused。\n2. `troll` 仅用于明显阴阳怪气、挑衅、嘲讽、故意拱火语气。\n3. 普通吐槽、拒绝、抱怨、冷淡，不要判为 `troll`。\n4. 证据不足时选择最保守、最贴近字面语气的分类。\n5. 无明显情绪时输出 none。\n\n用户消息：{user_message}\n回复：{llm_reply}\n\n输出要求：\n- 只能输出一个英文分类名\n- 不能输出解释、标点、代码块或其他文字",
+    "hint": "分析 LLM 回复文本的情绪，决定发什么类型的表情包。支持占位符：{emotion_list}（分类列表）、{llm_reply}（LLM 回复文本）、{user_message}（用户原始消息，可能为空）。为空时使用默认提示词。"
   }
 }

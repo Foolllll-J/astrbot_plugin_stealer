@@ -10,6 +10,7 @@ from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import Image, Plain
 
 from ..util.safe_io import safe_remove_file
+from .background_steal_queue import BackgroundStealQueue
 from .platform_detector import PlatformDetector
 from .image_download_service import ImageDownloadService
 
@@ -41,6 +42,21 @@ class EventHandler:
         # 子服务
         self._platform_detector = PlatformDetector(plugin_instance)
         self._image_download_service = ImageDownloadService(plugin_instance)
+        self._background_queue: BackgroundStealQueue | None = None
+
+    async def start_background_workers(self) -> None:
+        """Start the bounded passive-steal pipeline."""
+        if self._background_queue is None:
+            self._background_queue = BackgroundStealQueue(
+                self.plugin, capacity=32, worker_count=2
+            )
+        await self._background_queue.start()
+
+    async def stop_background_workers(self) -> None:
+        queue = self._background_queue
+        self._background_queue = None
+        if queue is not None:
+            await queue.stop()
 
     # ===== 门面委托：子服务方法 =====
 
@@ -436,6 +452,15 @@ class EventHandler:
         with self._force_capture_lock:
             self._force_capture_windows.pop(key, None)
 
+    @staticmethod
+    def _get_media_ref(img: Image) -> str:
+        """Extract a plain local path or URL from an image component."""
+        for attr in ("path", "file", "url"):
+            value = getattr(img, attr, "") or ""
+            if value:
+                return str(value)
+        return ""
+
     async def on_message(self, event: AstrMessageEvent):
         """消息监听：偷取消息中的图片并分类存储。"""
         if self._cleaned or self.plugin is None:
@@ -466,9 +491,41 @@ class EventHandler:
         if not imgs and not store_urls:
             return
         if force_active:
+            if self._background_queue is not None:
+                descriptors: list[dict[str, Any]] = []
+                if imgs:
+                    ref = self._get_media_ref(imgs[0])
+                    if ref:
+                        descriptors.append(
+                            {
+                                "media_ref": ref,
+                                "source": "force",
+                                "to_pending": False,
+                                "extra_meta": {},
+                            }
+                        )
+                elif store_urls:
+                    descriptors.append(
+                        {
+                            "media_ref": store_urls[0],
+                            "source": "force",
+                            "to_pending": False,
+                            "extra_meta": {
+                                "source": "qq_store",
+                                "origin_url": self._normalize_str(store_urls[0]),
+                            },
+                        }
+                    )
+                self.consume_force_capture(event)
+                if descriptors and await self._background_queue.submit_capture_async(descriptors):
+                    try:
+                        await event.send(
+                            MessageChain([Plain(text="✅ 已加入后台收录队列，处理完成后自动入库")])
+                        )
+                    except Exception as exc:
+                        logger.debug(f"发送后台收录确认失败: {exc}")
+                return
             await self._handle_force_capture(event, plugin_instance, imgs, store_urls)
-            return
-        if not self._should_process_image():
             return
         # 待审核池容量护栏：池满则暂停自动偷取（不下载、不处理、不删库内文件），
         # 审核通过/删除使 pending 减少后下条消息自然恢复。
@@ -566,6 +623,41 @@ class EventHandler:
                 imgs_to_process.append((i, img, extra_meta or {}))
             except Exception as e:
                 logger.error(f"收集图片信息失败: {e}")
+
+        # 冷却只针对确认过的表情包生效。普通图片不能消耗冷却窗口，
+        # 否则紧随其后的真实表情包会被直接跳过。
+        if (imgs_to_process or store_urls) and not self._should_process_image():
+            return
+
+        if self._background_queue is not None:
+            descriptors: list[dict[str, Any]] = []
+            for _i, img, extra_meta in imgs_to_process:
+                ref = self._get_media_ref(img)
+                if ref:
+                    descriptors.append(
+                        {
+                            "media_ref": ref,
+                            "source": "automatic",
+                            "to_pending": to_pending,
+                            "extra_meta": extra_meta,
+                        }
+                    )
+            for url in store_urls[:3]:
+                extra_meta = {"source": "qq_store", "origin_url": self._normalize_str(url)}
+                if origin_target_str:
+                    extra_meta["origin_target"] = origin_target_str
+                descriptors.append(
+                    {
+                        "media_ref": url,
+                        "source": "automatic",
+                        "to_pending": to_pending,
+                        "extra_meta": extra_meta,
+                    }
+                )
+            if descriptors:
+                await self._background_queue.submit_capture_async(descriptors)
+            return
+
         if imgs_to_process:
             logger.debug(f"开始并行下载 {len(imgs_to_process)} 张图片")
             download_results = await asyncio.gather(
@@ -720,6 +812,7 @@ class EventHandler:
 
     async def cleanup_async(self) -> None:
         """异步清理资源。"""
+        await self.stop_background_workers()
         await self.close_aiohttp_session()
 
     def cleanup(self):

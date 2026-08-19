@@ -1340,9 +1340,9 @@ class Main(Star):
                     if aiofiles:
                         async with aiofiles.open(prompts_path, encoding="utf-8") as f:
                             content = await f.read()
-                        prompts = json.loads(content)
+                        prompts = json.loads(content.lstrip("\ufeff"))
                     else:
-                        with open(prompts_path, encoding="utf-8") as f:
+                        with open(prompts_path, encoding="utf-8-sig") as f:
                             prompts = json.load(f)
                     self._apply_prompts(prompts)
                     self._ensure_default_prompts_in_config(prompts)
@@ -1354,6 +1354,7 @@ class Main(Star):
             self._sync_image_processor_from_runtime()
             self._sync_similarity_weights()  # 启动时把持久化的文字距离权重同步到 text_similarity 模块
             self.maintenance.start_periodic_tasks()
+            await self.event_handler.start_background_workers()
 
             # 初始化嵌入向量服务 + 回填旧数据（仅在开启嵌入检索时）
             if self.plugin_config.enable_embedding_search:
@@ -1412,6 +1413,10 @@ class Main(Star):
             except Exception:
                 pass
         if self.event_handler:
+            try:
+                await self.event_handler.stop_background_workers()
+            except Exception:
+                pass
             try:
                 await self.event_handler.cleanup_async()
             except Exception:

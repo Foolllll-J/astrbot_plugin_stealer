@@ -436,7 +436,7 @@
                 "pending_approve_batch": "Approve {count} pending item(s)?",
                 "pending_delete_blacklist_batch": "Delete and blacklist {count} pending item(s)?",
                 "pending_delete_batch": "Delete {count} pending item(s)?",
-                "delete_and_blacklist_image": "Delete and blacklist this image?\\nIt will no longer be auto-collected.",
+                "delete_and_blacklist_image": "Delete and blacklist this image?\nIt will no longer be auto-collected.",
                 "delete_image": "Delete this image? This action cannot be undone.",
                 "delete_selected_images": "Delete {count} selected image(s)?",
                 "storage_cleanup": "Found {count} cleanable item(s). This will remove stale indexes, orphan files, thumbnail cache, and temp files. Continue?",

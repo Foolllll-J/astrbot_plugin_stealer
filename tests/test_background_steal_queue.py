@@ -1,8 +1,12 @@
 import asyncio
+import shutil
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from astrbot_plugin_stealer.core.events.background_steal_queue import (
     BackgroundStealQueue,
@@ -106,6 +110,92 @@ class BackgroundQueueTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
         self.assertEqual(len(self.processed), 1)
         self.assertFalse(Path(self.processed[0]["file_path"]).exists())
+
+    async def test_remote_capture_tasks_are_bounded(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def slow_download(_url):
+            started.set()
+            await release.wait()
+            return None, False
+
+        self.plugin.event_handler = types.SimpleNamespace(
+            _download_url_to_temp=slow_download
+        )
+        self.queue.capture_limit = 1
+        self.assertTrue(
+            self.queue.submit_capture([{"media_ref": "https://example.test/a.jpg"}])
+        )
+        await asyncio.wait_for(started.wait(), timeout=1)
+        self.assertFalse(
+            self.queue.submit_capture([{"media_ref": "https://example.test/b.jpg"}])
+        )
+        release.set()
+        for _ in range(50):
+            if not self.queue._capture_tasks:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(len(self.queue._capture_tasks), 0)
+
+    async def test_remote_download_is_skipped_when_queue_full(self):
+        for worker in self.queue._workers:
+            worker.cancel()
+        await asyncio.gather(*self.queue._workers, return_exceptions=True)
+        self.queue._workers.clear()
+
+        self.queue.capacity = 1
+        self.queue._queue = asyncio.Queue(maxsize=1)
+        self.queue._queue.put_nowait(
+            types.SimpleNamespace(file_path=str(self._write_file("queued.jpg")))
+        )
+        calls = []
+
+        async def fake_download(url):
+            calls.append(url)
+            return None, False
+
+        self.plugin.event_handler = types.SimpleNamespace(
+            _download_url_to_temp=fake_download
+        )
+        await self.queue._stage_and_enqueue(
+            [{"media_ref": "https://example.test/a.jpg"}]
+        )
+        self.assertEqual(calls, [])
+
+    async def test_stop_waits_for_inflight_copy_thread(self):
+        source = self._write_file("slow-copy.jpg")
+        started = threading.Event()
+        original_copy = shutil.copy2
+
+        def slow_copy(src, dst):
+            started.set()
+            time.sleep(0.15)
+            return original_copy(src, dst)
+
+        self.plugin.event_handler = types.SimpleNamespace(
+            _download_url_to_temp=self._download_url_to_temp
+        )
+        with mock.patch("shutil.copy2", slow_copy):
+            self.queue.submit_capture([{"media_ref": str(source)}])
+            self.assertTrue(await asyncio.to_thread(started.wait, 2))
+            await self.queue.stop()
+            await asyncio.sleep(0.2)
+            self.assertEqual(list(self.queue.staging_dir.iterdir()), [])
+
+    async def test_worker_marks_processing_started(self):
+        marks = []
+        self.plugin.event_handler = types.SimpleNamespace(
+            _download_url_to_temp=self._download_url_to_temp,
+            mark_processing_started=lambda: marks.append(True),
+        )
+        source = self._write_file("mark.jpg")
+        self.queue.submit_capture([{"media_ref": str(source)}])
+        for _ in range(50):
+            if self.processed:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(self.processed and marks, [True])
 
     async def _download_url_to_temp(self, _url):
         return None, False

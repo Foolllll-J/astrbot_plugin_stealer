@@ -1,4 +1,5 @@
 import asyncio
+import os
 import random
 import threading
 import time
@@ -139,6 +140,21 @@ class EventHandler:
         self._last_process_time = current_time
         logger.debug(f"冷却检查：通过（冷却={cooldown}秒，距上次={time_since_last:.1f}秒）")
         return True
+
+    def mark_processing_started(self) -> None:
+        """后台 worker 开始实际处理时调用。
+
+        cooldown 模式必须覆盖真实处理开始时间，而不是仅覆盖入队时间；
+        否则慢 VLM 下消息仍会在冷却窗口后持续入队，worker 随后连续处理，
+        冷却间隔会失去意义。
+        """
+        try:
+            steal_mode = self.plugin.plugin_config.steal_mode
+        except Exception:
+            return
+        if steal_mode == "cooldown":
+            self._last_process_time = time.time()
+            logger.debug("冷却检查：后台处理开始，刷新冷却窗口")
 
     def _check_probability(self) -> bool:
         """概率模式：每次按 steal_chance 概率决定是否偷取。"""
@@ -454,11 +470,23 @@ class EventHandler:
 
     @staticmethod
     def _get_media_ref(img: Image) -> str:
-        """Extract a plain local path or URL from an image component."""
+        """Extract an existing local path or HTTP URL from an image component.
+
+        Prefer an attribute that points at an existing local file. A stale
+        local path must not shadow a usable URL in another attribute.
+        """
+        candidates: list[str] = []
         for attr in ("path", "file", "url"):
             value = getattr(img, attr, "") or ""
-            if value:
-                return str(value)
+            if not value:
+                continue
+            ref = str(value)
+            candidates.append(ref)
+            if os.path.exists(ref):
+                return ref
+        for ref in candidates:
+            if ref.startswith(("http://", "https://")):
+                return ref
         return ""
 
     async def on_message(self, event: AstrMessageEvent):
@@ -491,40 +519,8 @@ class EventHandler:
         if not imgs and not store_urls:
             return
         if force_active:
-            if self._background_queue is not None:
-                descriptors: list[dict[str, Any]] = []
-                if imgs:
-                    ref = self._get_media_ref(imgs[0])
-                    if ref:
-                        descriptors.append(
-                            {
-                                "media_ref": ref,
-                                "source": "force",
-                                "to_pending": False,
-                                "extra_meta": {},
-                            }
-                        )
-                elif store_urls:
-                    descriptors.append(
-                        {
-                            "media_ref": store_urls[0],
-                            "source": "force",
-                            "to_pending": False,
-                            "extra_meta": {
-                                "source": "qq_store",
-                                "origin_url": self._normalize_str(store_urls[0]),
-                            },
-                        }
-                    )
-                self.consume_force_capture(event)
-                if descriptors and await self._background_queue.submit_capture_async(descriptors):
-                    try:
-                        await event.send(
-                            MessageChain([Plain(text="✅ 已加入后台收录队列，处理完成后自动入库")])
-                        )
-                    except Exception as exc:
-                        logger.debug(f"发送后台收录确认失败: {exc}")
-                return
+            # 强制收录是管理员主动命令，保持同步处理以保留明确的
+            # 成功/失败反馈，也保留 convert_to_file_path 兜底。
             await self._handle_force_capture(event, plugin_instance, imgs, store_urls)
             return
         # 待审核池容量护栏：池满则暂停自动偷取（不下载、不处理、不删库内文件），

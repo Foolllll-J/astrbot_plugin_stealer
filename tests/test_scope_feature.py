@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -318,6 +319,42 @@ class ScopeFeatureTests(unittest.IsolatedAsyncioTestCase):
         await handler.on_message(event)
 
         self.assertEqual(checks, [])
+
+    async def test_force_capture_stays_synchronous_with_background_queue(self):
+        plugin = DummyPlugin()
+        tmp_dir = tempfile.TemporaryDirectory()
+        plugin.base_dir = Path(tmp_dir.name)
+        handler = self._create_handler(plugin)
+        await handler.start_background_workers()
+
+        image_cls = self._get_shared_image_class()
+        event = DummyEvent(target="group:123", messages=[image_cls()])
+        consumed = []
+        plugin.get_force_capture_entry = lambda _event: {"until": time.time() + 30}
+        plugin.consume_force_capture = lambda _event: consumed.append(True)
+
+        with tempfile.NamedTemporaryFile(delete=False) as fp:
+            temp_path = fp.name
+
+        async def fake_download(_img):
+            return temp_path, False
+
+        handler._download_original_image = fake_download
+        try:
+            await handler.on_message(event)
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            await handler.stop_background_workers()
+            tmp_dir.cleanup()
+
+        self.assertEqual(consumed, [True])
+        self.assertEqual(len(plugin.process_calls), 1)
+        sent_texts = []
+        for chain in event.sent_messages:
+            for comp in chain:
+                sent_texts.append(getattr(comp, "text", ""))
+        self.assertTrue(any("已收录" in text for text in sent_texts))
 
     async def test_event_handler_merges_multi_image_results_before_save(self):
         class MultiImagePlugin(DummyPlugin):

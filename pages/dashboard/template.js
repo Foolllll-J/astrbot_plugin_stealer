@@ -1060,7 +1060,7 @@ export const TEMPLATE = `
     </button>
 </div>
 
-<div v-if="toastOpen" class="toast-notification" @click="toastOpen = false">
+<div v-if="toastOpen" class="toast-notification" @click="toastOpen = false" style="white-space:pre-line">
     {{ toastMessage }}
 </div>
 
@@ -1070,7 +1070,7 @@ export const TEMPLATE = `
             <h2>{{ t('pages.dashboard.modal.confirm', 'Confirm Action') }}</h2>
         </div>
         <div style="padding:24px">
-            <p style="margin:0 0 24px;color:var(--text-main);font-size:1rem">{{ confirmMessage }}</p>
+            <p style="margin:0 0 24px;color:var(--text-main);font-size:1rem;white-space:pre-line">{{ confirmMessage }}</p>
             <div style="display:flex;gap:12px">
                 <button @click="onConfirmNo" class="codex-btn" style="flex:1">{{ t('pages.dashboard.actions.cancel', 'Cancel') }}</button>
                 <button @click="onConfirmYes" class="codex-btn danger" style="flex:1">{{ t('pages.dashboard.actions.confirm', 'Confirm') }}</button>

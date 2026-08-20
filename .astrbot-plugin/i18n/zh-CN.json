@@ -436,7 +436,7 @@
                 "pending_approve_batch": "确认通过 {count} 条待审核项？",
                 "pending_delete_blacklist_batch": "确认删除并拉黑 {count} 条待审核项？",
                 "pending_delete_batch": "确认删除 {count} 条待审核项？",
-                "delete_and_blacklist_image": "确定要删除并拉黑这张图片吗？\\n拉黑后将不再自动收集此图片。",
+                "delete_and_blacklist_image": "确定要删除并拉黑这张图片吗？\n拉黑后将不再自动收集此图片。",
                 "delete_image": "确定要删除这张图片吗？此操作无法撤销。",
                 "delete_selected_images": "确定要删除选中的 {count} 张图片吗？",
                 "storage_cleanup": "发现 {count} 个可清理项。将清理失效索引、孤儿文件、缩略图缓存和临时文件，是否继续？",

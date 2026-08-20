@@ -1340,7 +1340,7 @@ class Main(Star):
                     if aiofiles:
                         async with aiofiles.open(prompts_path, encoding="utf-8-sig") as f:
                             content = await f.read()
-                        prompts = json.loads(content.lstrip("\ufeff"))
+                        prompts = json.loads(content)
                     else:
                         with open(prompts_path, encoding="utf-8-sig") as f:
                             prompts = json.load(f)

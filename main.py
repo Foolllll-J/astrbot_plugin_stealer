@@ -1338,11 +1338,11 @@ class Main(Star):
                 prompts_path = plugin_dir / "prompts.json"
                 if prompts_path.exists():
                     if aiofiles:
-                        async with aiofiles.open(prompts_path, encoding="utf-8") as f:
+                        async with aiofiles.open(prompts_path, encoding="utf-8-sig") as f:
                             content = await f.read()
                         prompts = json.loads(content)
                     else:
-                        with open(prompts_path, encoding="utf-8") as f:
+                        with open(prompts_path, encoding="utf-8-sig") as f:
                             prompts = json.load(f)
                     self._apply_prompts(prompts)
                     self._ensure_default_prompts_in_config(prompts)

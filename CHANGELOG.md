@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.3] - 2026-08-20
+
+### added
+- PR #98：自动偷图改为有界后台管线（32 容量 + 2 worker）；本地媒体先快照再释放事件，远程下载后台执行
+- 后台暂存/下载任务限流（capture_limit），队列满时远程 URL 在下载前直接丢弃，避免任务无界增长
+- 冷却窗口在 worker 真正开始处理时刷新，慢 VLM 下冷却间隔不再失效
+- 测试补强：后台队列限流、满队列跳过下载、shutdown 等待拷贝线程、force capture 同步回归
+
+### fixed
+- PR #96：prompts.json 的 UTF-8 BOM 导致初始化 JSONDecodeError；统一用 utf-8-sig 读取并在 json.loads 前剥离残留 BOM
+- shutdown 清理 staging 时与 in-flight 拷贝线程的竞态：改用专用 executor shutdown(wait=True)
+- `/meme 偷` 入队后丢失同步成功/失败反馈的问题；恢复同步处理与 convert_to_file_path 兜底
+- WebUI 拉黑确认框把转义换行显示成字面量 `\n`（issue #97）；i18n 改为真实换行，确认框/toast 支持 pre-line 渲染
+
 ## [2.8.2] - 2026-08-14
 
 ### added

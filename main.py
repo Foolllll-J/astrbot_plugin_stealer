@@ -1340,10 +1340,11 @@ class Main(Star):
                     if aiofiles:
                         async with aiofiles.open(prompts_path, encoding="utf-8-sig") as f:
                             content = await f.read()
+                        content = content.lstrip("\ufeff")
                         prompts = json.loads(content)
                     else:
                         with open(prompts_path, encoding="utf-8-sig") as f:
-                            prompts = json.load(f)
+                            prompts = json.loads(f.read().lstrip("\ufeff"))
                     self._apply_prompts(prompts)
                     self._ensure_default_prompts_in_config(prompts)
             except Exception as e:

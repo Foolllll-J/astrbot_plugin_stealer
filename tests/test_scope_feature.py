@@ -306,6 +306,19 @@ class ScopeFeatureTests(unittest.IsolatedAsyncioTestCase):
             plugin.process_calls[0]["extra_meta"].get("origin_target"), "group:123"
         )
 
+    async def test_non_emoji_image_does_not_consume_steal_cooldown(self):
+        plugin = DummyPlugin()
+        handler = self._create_handler(plugin)
+        image_cls = self._get_shared_image_class()
+        event = DummyEvent(target="group:123", messages=[image_cls()])
+        checks = []
+        handler._should_process_image = lambda: checks.append(True) or True
+        handler._check_platform_emoji_metadata = lambda *args, **kwargs: False
+
+        await handler.on_message(event)
+
+        self.assertEqual(checks, [])
+
     async def test_event_handler_merges_multi_image_results_before_save(self):
         class MultiImagePlugin(DummyPlugin):
             def __init__(self):

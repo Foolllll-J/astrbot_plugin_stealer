@@ -1851,6 +1851,8 @@ createApp({
             nextPage,
             refreshView,
             formatDate,
+            formatBytes,
+            formatAddMethod,
             formatOriginTarget,
             getScopeLabel,
             PLACEHOLDER,

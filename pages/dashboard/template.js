@@ -273,6 +273,7 @@ export const TEMPLATE = `
             <div v-else class="inventory-grid" :class="{ 'list-mode': viewMode === 'list' }">
                 <div v-for="img in images" :key="img.hash" class="item-slot"
                     :class="{ selected: selectedImages.has(img.hash) }"
+                    @mouseenter="onItemSlotEnter($event, img)"
                     @click="isBatchMode ? toggleSelection(img) : openPreview(img)">
                     <div v-if="isBatchMode" class="batch-indicator">
                         <svg v-if="selectedImages.has(img.hash)" style="width:12px;height:12px" fill="none"

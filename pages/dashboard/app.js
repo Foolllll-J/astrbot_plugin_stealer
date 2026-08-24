@@ -483,6 +483,34 @@ createApp({
             }
         };
 
+        const placeMcTooltip = (event) => {
+            const slot = event.currentTarget;
+            if (!(slot instanceof HTMLElement) || viewMode.value === 'list') return;
+            if (document.documentElement.getAttribute('data-theme') !== 'minecraft') return;
+            const grid = slot.closest('.inventory-grid');
+            const tip = slot.querySelector('.item-info');
+            if (!grid || !tip) return;
+            slot.classList.remove('tooltip-below', 'tooltip-start', 'tooltip-end');
+            const slotRect = slot.getBoundingClientRect();
+            const gridRect = grid.getBoundingClientRect();
+            const pad = 8;
+            const tipH = Math.max(tip.offsetHeight, 44);
+            const tipW = Math.max(tip.offsetWidth, 96);
+            if (slotRect.top - gridRect.top < tipH + pad) {
+                slot.classList.add('tooltip-below');
+            }
+            const midX = slotRect.left + slotRect.width / 2;
+            if (midX - tipW / 2 < gridRect.left + pad) {
+                slot.classList.add('tooltip-start');
+            } else if (midX + tipW / 2 > gridRect.right - pad) {
+                slot.classList.add('tooltip-end');
+            }
+        };
+        const onItemSlotEnter = (event, img) => {
+            placeMcTooltip(event);
+            if (img?.hash) loadOriginalImage(img.hash);
+        };
+
         const loadOriginalImage = async (hash) => {
             if (!hash || originalDataUrls[hash]) return;
             try {
@@ -2056,6 +2084,7 @@ createApp({
             imageDataUrls,
             originalDataUrls,
             loadOriginalImage,
+            onItemSlotEnter,
             downloadImage,
 
             favoriteCount,

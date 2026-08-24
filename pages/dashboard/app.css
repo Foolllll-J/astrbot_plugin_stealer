@@ -3731,7 +3731,7 @@ html[data-theme="minecraft"],
     box-shadow: var(--mc-inset);
     outline: 2px solid #fff;
     outline-offset: -2px;
-    z-index: 6;
+    z-index: 40;
 }
 [data-theme="minecraft"] .inventory-grid:not(.list-mode) .item-slot.selected {
     outline: 2px solid #ffff55;
@@ -3776,6 +3776,23 @@ html[data-theme="minecraft"],
     opacity: 1;
     transform: translateX(-50%);
     background: #100010;
+}
+[data-theme="minecraft"] .inventory-grid:not(.list-mode) .item-slot.tooltip-below .item-info {
+    top: calc(100% + 8px);
+    bottom: auto;
+}
+[data-theme="minecraft"] .inventory-grid:not(.list-mode) .item-slot.tooltip-start .item-info {
+    left: 0;
+    transform: none;
+}
+[data-theme="minecraft"] .inventory-grid:not(.list-mode) .item-slot.tooltip-end .item-info {
+    left: auto;
+    right: 0;
+    transform: none;
+}
+[data-theme="minecraft"] .inventory-grid:not(.list-mode) .item-slot.tooltip-start:hover .item-info,
+[data-theme="minecraft"] .inventory-grid:not(.list-mode) .item-slot.tooltip-end:hover .item-info {
+    transform: none;
 }
 [data-theme="minecraft"] .inventory-grid:not(.list-mode) .item-category {
     color: #fff;

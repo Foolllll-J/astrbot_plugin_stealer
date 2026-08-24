@@ -445,6 +445,24 @@
             },
             "prompt": {
                 "origin_scope": "Enter the origin scope, for example group:123456 or user:123456."
+            },
+            "themes": {
+                "title": "Theme",
+                "auto": "Follow host",
+                "dark": "Dark Gold",
+                "light": "Light",
+                "minecraft": "Minecraft",
+                "fallout": "Fallout 4",
+                "group_original": "Original",
+                "group_game": "Game inventory"
+            },
+            "view": {
+                "grid": "Grid view",
+                "list": "List view"
+            },
+            "kbd": {
+                "navigate": "Navigate",
+                "clear_focus": "Clear focus"
             }
         }
     }

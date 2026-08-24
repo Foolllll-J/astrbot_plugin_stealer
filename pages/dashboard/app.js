@@ -103,32 +103,34 @@ createApp({
         const updatePageSize = () => {
             const w = window.innerWidth;
             const h = window.innerHeight;
-            const gap = 12;
+            const isMobile = w < 768;
+            const gap = isMobile ? 8 : 12;
+            const sidebarWidth = isMobile ? 0 : 180;
+            const chromeX = isMobile ? 32 : 64;
+            const availableWidth = Math.max(200, w - sidebarWidth - chromeX);
 
-            let slotSize, sidebarWidth, mainPadding;
-            if (w < 768) {
-                slotSize = 120;
-                sidebarWidth = 0;
-                mainPadding = 24;
-            } else {
-                slotSize = 160;
-                sidebarWidth = 180;
-                mainPadding = 44;
-            }
+            const targetCols = isMobile
+                ? (w < 400 ? 3 : 4)
+                : w < 1024 ? 5 : w < 1280 ? 6 : w < 1600 ? 8 : 10;
+            const minSlot = isMobile ? 80 : 100;
+            const maxSlot = isMobile ? 150 : 220;
+            const slot = Math.max(
+                minSlot,
+                Math.min(maxSlot, Math.floor((availableWidth - gap * (targetCols - 1)) / targetCols)),
+            );
+            document.documentElement.style.setProperty('--slot-size', `${slot}px`);
 
-            const availableWidth = w - sidebarWidth - mainPadding;
-            const perRow = Math.max(2, Math.floor((availableWidth + gap) / (slotSize + gap)));
-
-            const headerHeight = 56;
-            const toolbarHeight = 64;
-            const paginationHeight = 60;
-            const availableHeight = h - headerHeight - toolbarHeight - paginationHeight - 40;
-            const rows = Math.max(2, Math.floor((availableHeight + gap) / (slotSize + gap)));
-
-            pageSize.value = perRow * rows;
+            const headerHeight = isMobile ? 100 : 72;
+            const toolbarHeight = 70;
+            const paginationHeight = 56;
+            const availableHeight = Math.max(180, h - headerHeight - toolbarHeight - paginationHeight);
+            const rows = Math.max(2, Math.floor((availableHeight + gap) / (slot + gap)));
+            pageSize.value = targetCols * Math.max(2, Math.floor(rows * 0.75));
+            pendingPageSize.value = targetCols * Math.max(2, rows - 1);
         };
 
-        const thumbnailCache = createLRUCache(50);
+        const thumbnailCache = createLRUCache(300);
+        const inflightThumbs = new Map();
 
         const previewOpen = ref(false);
         const previewItem = ref(null);
@@ -192,9 +194,11 @@ createApp({
         };
         const toastOpen = ref(false);
         const toastMessage = ref('');
+        const toastType = ref('info');
         let toastTimer = null;
-        const showAlert = (msg) => {
+        const showAlert = (msg, type = 'info') => {
             toastMessage.value = msg;
+            toastType.value = ['success', 'error', 'info'].includes(type) ? type : 'info';
             toastOpen.value = true;
             clearTimeout(toastTimer);
             toastTimer = setTimeout(() => { toastOpen.value = false; }, 3000);
@@ -309,8 +313,144 @@ createApp({
 
         let searchTimeout = null;
 
-        const isDarkTheme = ref(true);
-        const theme = computed(() => isDarkTheme.value ? 'dark' : 'light');
+        const THEME_STORAGE_KEY = 'stealer_theme_mode';
+        const VIEW_STORAGE_KEY = 'stealer_view_mode';
+        const readStored = (key) => {
+            try { return localStorage.getItem(key); } catch (e) { return null; }
+        };
+        const writeStored = (key, value) => {
+            try { localStorage.setItem(key, value); } catch (e) { /* 私密模式等场景忽略 */ }
+        };
+
+        const THEME_OPTIONS = [
+            { value: 'auto', key: 'auto', fallback: 'Follow host', group: 'original' },
+            { value: 'dark', key: 'dark', fallback: 'Dark Gold', swatch: '#161b2a,#d4a853', group: 'original' },
+            { value: 'light', key: 'light', fallback: 'Light', swatch: '#faf8f3,#8b6914', group: 'original' },
+            { value: 'minecraft', key: 'minecraft', fallback: 'Minecraft', swatch: '#2a1c10,#5d9c3d', group: 'game' },
+            { value: 'fallout', key: 'fallout', fallback: 'Fallout 4', swatch: '#021408,#1bff80', group: 'game' },
+        ];
+        const LEGACY_THEMES = { midnight: 'dark', sakura: 'light' };
+        const originalThemeOptions = computed(() => THEME_OPTIONS.filter((o) => o.group !== 'game'));
+        const gameThemeOptions = computed(() => THEME_OPTIONS.filter((o) => o.group === 'game'));
+        const resolveThemeValue = (raw) => {
+            const mapped = LEGACY_THEMES[raw] || raw;
+            return THEME_OPTIONS.some((o) => o.value === mapped) ? mapped : 'auto';
+        };
+        const themeMode = ref((() => {
+            try {
+                const q = new URLSearchParams(location.search).get('theme');
+                if (q) return resolveThemeValue(q);
+            } catch (e) { /* ignore */ }
+            return resolveThemeValue(readStored(THEME_STORAGE_KEY) || 'auto');
+        })());
+        const contextIsDark = ref(true);
+        const effectiveTheme = computed(() => (
+            themeMode.value !== 'auto' ? themeMode.value : (contextIsDark.value ? 'dark' : 'light')
+        ));
+        const applyTheme = () => {
+            document.documentElement.setAttribute('data-theme', effectiveTheme.value);
+        };
+        const setThemeMode = (mode) => {
+            if (!THEME_OPTIONS.some((o) => o.value === mode)) return;
+            themeMode.value = mode;
+            writeStored(THEME_STORAGE_KEY, mode);
+            applyTheme();
+        };
+        const themePickerOpen = ref(false);
+        const closeThemePicker = () => { themePickerOpen.value = false; };
+
+        const viewMode = ref(readStored(VIEW_STORAGE_KEY) === 'list' ? 'list' : 'grid');
+        const setViewMode = (mode) => {
+            viewMode.value = mode === 'list' ? 'list' : 'grid';
+            writeStored(VIEW_STORAGE_KEY, viewMode.value);
+        };
+
+        // 分类 accent 色：内置情绪各分配固定色相，自定义分类按 key 哈希
+        const CATEGORY_HUES = {
+            happy: 45, sad: 215, angry: 2, shy: 330, surprised: 52, troll: 285,
+            cry: 225, confused: 200, embarrassed: 18, love: 340, disgust: 90,
+            fear: 265, excitement: 30, tired: 195, sigh: 210, thank: 140, dumb: 275,
+        };
+        const hashHue = (text) => {
+            let h = 0;
+            for (const ch of String(text)) h = (h * 31 + ch.codePointAt(0)) % 360;
+            return h;
+        };
+        const catAccent = (key) => {
+            const cleanKey = String(key || '').trim();
+            if (!cleanKey || cleanKey === '__favorite__') return {};
+            const hue = CATEGORY_HUES[cleanKey] ?? hashHue(cleanKey);
+            const isLightFamily = effectiveTheme.value === 'light';
+            const light = isLightFamily ? 36 : 66;
+            return {
+                '--cat-accent': `hsl(${hue}, 58%, ${light}%)`,
+                '--cat-accent-soft': `hsla(${hue}, 55%, ${light}%, 0.16)`,
+            };
+        };
+
+        // 预览大图缩放 / 拖拽
+        const previewZoom = ref(1);
+        const previewPanX = ref(0);
+        const previewPanY = ref(0);
+        const isPanning = ref(false);
+        let panStartX = 0, panStartY = 0, panBaseX = 0, panBaseY = 0;
+        const clampZoom = (z) => Math.min(8, Math.max(1, z));
+        const resetPreviewZoom = () => {
+            previewZoom.value = 1;
+            previewPanX.value = 0;
+            previewPanY.value = 0;
+            isPanning.value = false;
+        };
+        const previewTransform = computed(() => (
+            `translate(${previewPanX.value}px, ${previewPanY.value}px) scale(${previewZoom.value})`
+        ));
+        const onPreviewWheel = (e) => {
+            e.preventDefault();
+            const next = clampZoom(previewZoom.value * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
+            if (next === 1) { previewPanX.value = 0; previewPanY.value = 0; }
+            previewZoom.value = next;
+        };
+        const onPanMove = (e) => {
+            if (!isPanning.value) return;
+            previewPanX.value = panBaseX + (e.clientX - panStartX);
+            previewPanY.value = panBaseY + (e.clientY - panStartY);
+        };
+        const endPan = () => {
+            isPanning.value = false;
+            window.removeEventListener('mousemove', onPanMove);
+            window.removeEventListener('mouseup', endPan);
+        };
+        const startPan = (e) => {
+            if (previewZoom.value <= 1 || e.button !== 0) return;
+            e.preventDefault();
+            isPanning.value = true;
+            panStartX = e.clientX;
+            panStartY = e.clientY;
+            panBaseX = previewPanX.value;
+            panBaseY = previewPanY.value;
+            window.addEventListener('mousemove', onPanMove);
+            window.addEventListener('mouseup', endPan);
+        };
+        const toggleZoom = () => {
+            if (previewZoom.value > 1) resetPreviewZoom();
+            else previewZoom.value = 2.5;
+        };
+
+        // 审核区键盘焦点（A 通过 / R 拒绝 / B 拒绝+拉黑 / E 编辑）
+        const focusedPendingId = ref(null);
+        const movePendingFocus = (dir) => {
+            const list = pendingImages.value;
+            if (!list.length) return;
+            const idx = list.findIndex((i) => i.id === focusedPendingId.value);
+            const next = idx < 0
+                ? (dir > 0 ? 0 : list.length - 1)
+                : Math.min(list.length - 1, Math.max(0, idx + dir));
+            focusedPendingId.value = list[next].id;
+            nextTick(() => {
+                document.querySelector(`[data-pending-id="${list[next].id}"]`)
+                    ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            });
+        };
 
         const imageDataUrls = reactive({});
         const originalDataUrls = reactive({});
@@ -320,14 +460,26 @@ createApp({
             const cached = thumbnailCache.get(hash);
             if (cached) { imageDataUrls[hash] = cached; return; }
             if (imageDataUrls[hash]) return;
-            try {
-                const data = await bridge.apiGet('thumbnail', { hash, size: 300 });
-                if (data && data.url) {
-                    imageDataUrls[hash] = data.url;
-                    thumbnailCache.set(hash, data.url);
+            if (inflightThumbs.has(hash)) {
+                const pending = await inflightThumbs.get(hash);
+                if (pending?.url) imageDataUrls[hash] = pending.url;
+                return;
+            }
+            const request = (async () => {
+                try {
+                    return await bridge.apiGet('thumbnail', { hash, size: 300 });
+                } catch (e) {
+                    console.error('Failed to load thumbnail:', hash, e);
+                    return null;
+                } finally {
+                    inflightThumbs.delete(hash);
                 }
-            } catch (e) {
-                console.error('Failed to load thumbnail:', hash, e);
+            })();
+            inflightThumbs.set(hash, request);
+            const data = await request;
+            if (data && data.url) {
+                imageDataUrls[hash] = data.url;
+                thumbnailCache.set(hash, data.url);
             }
         };
 
@@ -599,13 +751,13 @@ createApp({
                 });
                 const data = await res.json();
                 if (data.success) {
-                    showAlert(t('pages.dashboard.alerts.pending_approved', 'Approved {count} item(s).').replace('{count}', data.approved));
+                    showAlert(t('pages.dashboard.alerts.pending_approved', 'Approved {count} item(s).').replace('{count}', data.approved), 'success');
                     await fetchPendingImages(pendingCurrentPage.value);
                     await fetchPendingStats();
                 } else {
-                    showAlert(`${t('pages.dashboard.alerts.approve_failed', 'Approve failed')}: ${data.error || t('pages.dashboard.messages.unknown_error', 'Unknown error')}`);
+                    showAlert(`${t('pages.dashboard.alerts.approve_failed', 'Approve failed')}: ${data.error || t('pages.dashboard.messages.unknown_error', 'Unknown error')}`, 'error');
                 }
-            } catch (e) { showAlert(`${t('pages.dashboard.alerts.approve_failed', 'Approve failed')}: ${e.message}`); }
+            } catch (e) { showAlert(`${t('pages.dashboard.alerts.approve_failed', 'Approve failed')}: ${e.message}`, 'error'); }
         };
 
         // issue #87：审核区编辑
@@ -657,7 +809,7 @@ createApp({
                 });
                 const data = await res.json();
                 if (!data.success) {
-                    showAlert(`${t('pages.dashboard.alerts.save_failed', 'Save failed')}: ${data.error || t('pages.dashboard.messages.unknown_error', 'Unknown error')}`);
+                    showAlert(`${t('pages.dashboard.alerts.save_failed', 'Save failed')}: ${data.error || t('pages.dashboard.messages.unknown_error', 'Unknown error')}`, 'error');
                     return;
                 }
 
@@ -668,12 +820,12 @@ createApp({
                 }
 
                 // 仅保存：刷新当前页
-                showAlert(t('pages.dashboard.alerts.pending_saved', 'Pending item saved.'));
+                showAlert(t('pages.dashboard.alerts.pending_saved', 'Pending item saved.'), 'success');
                 closePendingEdit();
                 await fetchPendingImages(pendingCurrentPage.value);
                 await fetchPendingStats();
             } catch (e) {
-                showAlert(`${t('pages.dashboard.alerts.save_failed', 'Save failed')}: ${e.message}`);
+                showAlert(`${t('pages.dashboard.alerts.save_failed', 'Save failed')}: ${e.message}`, 'error');
             }
         };
 
@@ -687,13 +839,13 @@ createApp({
                 const data = await res.json();
                 if (data.success) {
                     const suffix = data.blacklisted ? ` ${t('pages.dashboard.alerts.and_blacklisted', '(blacklisted)')}` : '';
-                    showAlert(t('pages.dashboard.alerts.pending_deleted', 'Deleted {count} item(s).').replace('{count}', data.deleted) + suffix);
+                    showAlert(t('pages.dashboard.alerts.pending_deleted', 'Deleted {count} item(s).').replace('{count}', data.deleted) + suffix, 'success');
                     await fetchPendingImages(pendingCurrentPage.value);
                     await fetchPendingStats();
                 } else {
-                    showAlert(`${t('pages.dashboard.alerts.delete_failed', 'Delete failed')}: ${data.error || t('pages.dashboard.messages.unknown_error', 'Unknown error')}`);
+                    showAlert(`${t('pages.dashboard.alerts.delete_failed', 'Delete failed')}: ${data.error || t('pages.dashboard.messages.unknown_error', 'Unknown error')}`, 'error');
                 }
-            } catch (e) { showAlert(`${t('pages.dashboard.alerts.delete_failed', 'Delete failed')}: ${e.message}`); }
+            } catch (e) { showAlert(`${t('pages.dashboard.alerts.delete_failed', 'Delete failed')}: ${e.message}`, 'error'); }
         };
 
         const approvePendingBatch = async () => {
@@ -720,7 +872,7 @@ createApp({
                 pendingBatchMode.value = false;
                 await fetchPendingImages(pendingCurrentPage.value);
                 await fetchPendingStats();
-            } catch (e) { showAlert(`${t('pages.dashboard.alerts.batch_approve_failed', 'Batch approve failed')}: ${e.message}`); }
+            } catch (e) { showAlert(`${t('pages.dashboard.alerts.batch_approve_failed', 'Batch approve failed')}: ${e.message}`, 'error'); }
         };
 
         const rejectPendingBatch = async (blacklist = false) => {
@@ -745,13 +897,13 @@ createApp({
                     const suffix = data.blacklisted
                         ? ` ${t('pages.dashboard.alerts.blacklisted_count', 'Blacklisted {count} item(s).').replace('{count}', data.blacklisted)}`
                         : '';
-                    showAlert(t('pages.dashboard.alerts.pending_deleted', 'Deleted {count} item(s).').replace('{count}', data.deleted) + suffix);
+                    showAlert(t('pages.dashboard.alerts.pending_deleted', 'Deleted {count} item(s).').replace('{count}', data.deleted) + suffix, 'success');
                 }
                 pendingSelectedImages.value = new Set();
                 pendingBatchMode.value = false;
                 await fetchPendingImages(pendingCurrentPage.value);
                 await fetchPendingStats();
-            } catch (e) { showAlert(`${t('pages.dashboard.alerts.batch_delete_failed', 'Batch delete failed')}: ${e.message}`); }
+            } catch (e) { showAlert(`${t('pages.dashboard.alerts.batch_delete_failed', 'Batch delete failed')}: ${e.message}`, 'error'); }
         };
 
         const pendingBatchMode = ref(false);
@@ -806,6 +958,7 @@ createApp({
         const openPreview = (img) => {
             previewItem.value = img;
             previewOpen.value = true;
+            resetPreviewZoom();
             if (img?.hash) {
                 loadOriginalImage(img.hash);
             }
@@ -815,6 +968,7 @@ createApp({
             previewOpen.value = false;
             previewItem.value = null;
             isEditing.value = false;
+            resetPreviewZoom();
             for (const hash of Object.keys(originalDataUrls)) {
                 delete originalDataUrls[hash];
             }
@@ -826,18 +980,62 @@ createApp({
             const nextIdx = idx + direction;
             if (nextIdx >= 0 && nextIdx < images.value.length) {
                 previewItem.value = images.value[nextIdx];
+                resetPreviewZoom();
                 loadOriginalImage(previewItem.value.hash);
             }
         };
         const prevImage = () => navigateImage(-1);
         const nextImage = () => navigateImage(1);
 
+        const isTypingTarget = (e) => {
+            const target = e.target;
+            return Boolean(target && (target.matches?.('input, textarea, select') || target.isContentEditable));
+        };
+        const anyModalOpen = () => (
+            confirmOpen.value || promptOpen.value || uploadOpen.value || batchUploadOpen.value
+            || emotionsOpen.value || batchMoveOpen.value || batchScopeOpen.value || pendingEditOpen.value
+        );
+
         const handleKeydown = (e) => {
-            if (!previewOpen.value) return;
-            if (isEditing.value) return;
-            if (e.key === 'ArrowLeft') prevImage();
-            if (e.key === 'ArrowRight') nextImage();
-            if (e.key === 'Escape') closePreview();
+            if (isTypingTarget(e)) return;
+            if (previewOpen.value) {
+                if (isEditing.value) return;
+                if (e.key === 'ArrowLeft') prevImage();
+                else if (e.key === 'ArrowRight') nextImage();
+                else if (e.key === 'Escape') closePreview();
+                else if (e.key === '+' || e.key === '=') previewZoom.value = clampZoom(previewZoom.value * 1.25);
+                else if (e.key === '-' || e.key === '_') previewZoom.value = clampZoom(previewZoom.value / 1.25);
+                else if (e.key === '0') resetPreviewZoom();
+                return;
+            }
+            if (anyModalOpen()) return;
+            if (activeSection.value !== 'pending' || !pendingImages.value.length) return;
+            switch (e.key) {
+                case 'ArrowRight':
+                case 'ArrowDown': e.preventDefault(); movePendingFocus(1); break;
+                case 'ArrowLeft':
+                case 'ArrowUp': e.preventDefault(); movePendingFocus(-1); break;
+                case 'Escape': focusedPendingId.value = null; break;
+                case 'a':
+                case 'A':
+                    if (focusedPendingId.value != null) { approvePending(focusedPendingId.value); focusedPendingId.value = null; }
+                    break;
+                case 'r':
+                case 'R':
+                    if (focusedPendingId.value != null) { rejectPending(focusedPendingId.value, e.shiftKey); focusedPendingId.value = null; }
+                    break;
+                case 'b':
+                case 'B':
+                    if (focusedPendingId.value != null) { rejectPending(focusedPendingId.value, true); focusedPendingId.value = null; }
+                    break;
+                case 'e':
+                case 'E': {
+                    const item = pendingImages.value.find((i) => i.id === focusedPendingId.value);
+                    if (item) openPendingEdit(item);
+                    break;
+                }
+                default: break;
+            }
         };
 
         const startEdit = () => {
@@ -882,7 +1080,7 @@ createApp({
                     showAlert(data.error || t('pages.dashboard.alerts.save_failed', 'Save failed.'));
                 }
             } catch (e) {
-                showAlert(`${t('pages.dashboard.alerts.save_failed', 'Save failed')}: ${e.message}`);
+                showAlert(`${t('pages.dashboard.alerts.save_failed', 'Save failed')}: ${e.message}`, 'error');
             }
         };
 
@@ -1080,7 +1278,7 @@ createApp({
                         await fetchImages(currentPage.value);
                     }
                 } else { showAlert(data.error || t('pages.dashboard.alerts.action_failed', 'Action failed.')); }
-            } catch (e) { showAlert(`${t('pages.dashboard.alerts.favorite_failed', 'Favorite update failed')}: ${e.message}`); }
+            } catch (e) { showAlert(`${t('pages.dashboard.alerts.favorite_failed', 'Favorite update failed')}: ${e.message}`, 'error'); }
         };
 
         const batchSetFavorite = async (favorite) => {
@@ -1102,7 +1300,7 @@ createApp({
                         ).replace('{count}', data.count || 0)
                     );
                 } else { showAlert(data.error || t('pages.dashboard.alerts.batch_action_failed', 'Batch action failed.')); }
-            } catch (e) { showAlert(`${t('pages.dashboard.alerts.batch_action_failed', 'Batch action failed')}: ${e.message}`); }
+            } catch (e) { showAlert(`${t('pages.dashboard.alerts.batch_action_failed', 'Batch action failed')}: ${e.message}`, 'error'); }
         };
 
         const runStorageCleanup = async () => {
@@ -1142,9 +1340,9 @@ createApp({
                 const removedCount = Object.values(removed).reduce((sum, value) => sum + Number(value || 0), 0);
                 await fetchImages(currentPage.value);
                 await fetchStats();
-                showAlert(t('pages.dashboard.alerts.storage_cleanup_done', 'Storage cleanup completed. Processed {count} item(s).').replace('{count}', removedCount));
+                showAlert(t('pages.dashboard.alerts.storage_cleanup_done', 'Storage cleanup completed. Processed {count} item(s).').replace('{count}', removedCount), 'success');
             } catch (e) {
-                showAlert(`${t('pages.dashboard.alerts.storage_cleanup_failed', 'Storage cleanup failed')}: ${e.message}`);
+                showAlert(`${t('pages.dashboard.alerts.storage_cleanup_failed', 'Storage cleanup failed')}: ${e.message}`, 'error');
             }
         };
 
@@ -1172,7 +1370,7 @@ createApp({
                     selectedImages.value = new Set();
                     isBatchMode.value = false;
                     await fetchImages(currentPage.value);
-                    showAlert(t('pages.dashboard.alerts.scope_repaired', 'Repaired origin scope for {count} image(s).').replace('{count}', data.count || 0));
+                    showAlert(t('pages.dashboard.alerts.scope_repaired', 'Repaired origin scope for {count} image(s).').replace('{count}', data.count || 0), 'success');
                 } else {
                     showAlert(data.error || t('pages.dashboard.alerts.scope_repair_failed', 'Origin scope repair failed.'));
                 }
@@ -1653,13 +1851,9 @@ createApp({
             return map[method] || t('pages.dashboard.fields.add_method_unknown', '未知');
         };
 
-        const applyTheme = () => {
-            document.documentElement.setAttribute('data-theme', theme.value);
-        };
-
         const syncThemeFromContext = (context = null) => {
             const nextContext = context || bridge?.getContext?.() || {};
-            isDarkTheme.value = Boolean(nextContext?.isDark);
+            contextIsDark.value = nextContext?.isDark === undefined ? true : Boolean(nextContext.isDark);
             applyTheme();
             localeVersion.value += 1;
             updateDocumentMeta();
@@ -1678,12 +1872,14 @@ createApp({
         onMounted(() => {
             updateDocumentMeta();
             syncThemeFromContext();
+            applyTheme();
             bridge?.onContext?.((context) => {
                 syncThemeFromContext(context);
             });
             updatePageSize();
             window.addEventListener('keydown', handleKeydown);
             window.addEventListener('resize', handleResize);
+            window.addEventListener('click', closeThemePicker);
             imgObserver = new IntersectionObserver((entries) => {
                 entries.forEach((entry) => {
                     if (entry.isIntersecting) {
@@ -1701,6 +1897,7 @@ createApp({
         onUnmounted(() => {
             window.removeEventListener('keydown', handleKeydown);
             window.removeEventListener('resize', handleResize);
+            window.removeEventListener('click', closeThemePicker);
             if (imgObserver) imgObserver.disconnect();
             clearTimeout(resizeTimer);
             clearTimeout(searchTimeout);
@@ -1881,6 +2078,30 @@ createApp({
             onPromptCancel,
             toastOpen,
             toastMessage,
+            toastType,
+
+            // 主题选择 / 视图模式 / 分类 accent
+            themeMode,
+            effectiveTheme,
+            THEME_OPTIONS,
+            originalThemeOptions,
+            gameThemeOptions,
+            setThemeMode,
+            themePickerOpen,
+            viewMode,
+            setViewMode,
+            catAccent,
+
+            // 预览缩放
+            previewZoom,
+            isPanning,
+            previewTransform,
+            onPreviewWheel,
+            startPan,
+            toggleZoom,
+
+            // 审核区键盘焦点
+            focusedPendingId,
         };
     },
     template: TEMPLATE,

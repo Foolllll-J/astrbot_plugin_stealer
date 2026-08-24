@@ -445,6 +445,24 @@
             },
             "prompt": {
                 "origin_scope": "请输入来源作用域，例如 group:123456 或 user:123456。"
+            },
+            "themes": {
+                "title": "主题",
+                "auto": "跟随宿主",
+                "dark": "暗色·鎏金",
+                "light": "亮色",
+                "minecraft": "我的世界",
+                "fallout": "辐射4",
+                "group_original": "原版",
+                "group_game": "游戏背包"
+            },
+            "view": {
+                "grid": "网格视图",
+                "list": "列表视图"
+            },
+            "kbd": {
+                "navigate": "选择",
+                "clear_focus": "取消聚焦"
             }
         }
     }

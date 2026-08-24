@@ -39,6 +39,34 @@ export const TEMPLATE = `
             <span class="health-dot"></span>
             <span class="health-text">{{ getHealthText(healthStatus) }}</span>
         </div>
+        <div class="theme-picker">
+            <button type="button" class="theme-menu-btn"
+                @click.stop="themePickerOpen = !themePickerOpen"
+                :aria-label="t('pages.dashboard.themes.title', 'Theme')"
+                :title="t('pages.dashboard.themes.title', 'Theme')">
+                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                        d="M7 21a4.000 4.000 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4.000 4.000 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+                </svg>
+            </button>
+            <div v-if="themePickerOpen" class="theme-popover" @click.stop>
+                <div class="theme-group-label">{{ t('pages.dashboard.themes.group_original', 'Original') }}</div>
+                <div v-for="opt in originalThemeOptions" :key="opt.value" class="theme-option"
+                    :class="{ active: themeMode === opt.value }" @click="setThemeMode(opt.value); themePickerOpen = false">
+                    <span v-if="opt.swatch" class="theme-swatch"
+                        :style="{ background: 'linear-gradient(135deg, ' + opt.swatch.split(',')[0] + ' 50%, ' + opt.swatch.split(',')[1] + ' 50%)' }"></span>
+                    <span v-else class="theme-swatch" style="background: conic-gradient(#161b2a 50%, #faf8f3 50%)"></span>
+                    {{ t('pages.dashboard.themes.' + opt.key, opt.fallback) }}
+                </div>
+                <div class="theme-group-label">{{ t('pages.dashboard.themes.group_game', 'Game inventory') }}</div>
+                <div v-for="opt in gameThemeOptions" :key="opt.value" class="theme-option"
+                    :class="{ active: themeMode === opt.value }" @click="setThemeMode(opt.value); themePickerOpen = false">
+                    <span class="theme-swatch"
+                        :style="{ background: 'linear-gradient(135deg, ' + opt.swatch.split(',')[0] + ' 50%, ' + opt.swatch.split(',')[1] + ' 50%)' }"></span>
+                    {{ t('pages.dashboard.themes.' + opt.key, opt.fallback) }}
+                </div>
+            </div>
+        </div>
     </div>
 </header>
 
@@ -79,8 +107,9 @@ export const TEMPLATE = `
                     <span class="category-count">{{ stats.total || 0 }}</span>
                 </div>
                 <div v-for="cat in categories" :key="cat.key" class="category-item"
-                    :class="{ active: selectedCategory === cat.key }"
+                    :class="{ active: selectedCategory === cat.key }" :style="catAccent(cat.key)"
                     @click="selectLibraryCategory(cat.key)">
+                    <span class="cat-dot"></span>
                     <span class="category-name">{{ cat.name }}</span>
                     <span class="category-count">{{ cat.count }}</span>
                 </div>
@@ -112,8 +141,9 @@ export const TEMPLATE = `
                     <span class="category-count">{{ pendingCategoryTotal }}</span>
                 </div>
                 <div v-for="cat in pendingCategories" :key="cat.key" class="category-item"
-                    :class="{ active: pendingCategory === cat.key }"
+                    :class="{ active: pendingCategory === cat.key }" :style="catAccent(cat.key)"
                     @click="selectPendingCategory(cat.key)">
+                    <span class="cat-dot"></span>
                     <span class="category-name">{{ cat.name }}</span>
                     <span class="category-count">{{ cat.count }}</span>
                 </div>
@@ -153,6 +183,29 @@ export const TEMPLATE = `
                             <option value="most_used">{{ t('pages.dashboard.sort.most_used', 'Most Used') }}</option>
                             <option value="last_used">{{ t('pages.dashboard.sort.last_used', 'Last Used') }}</option>
                         </select>
+                    </div>
+
+                    <div class="toolbar-group">
+                        <div class="view-toggle-group">
+                            <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'grid' }"
+                                @click="setViewMode('grid')"
+                                :aria-label="t('pages.dashboard.view.grid', 'Grid view')"
+                                :title="t('pages.dashboard.view.grid', 'Grid view')">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                                </svg>
+                            </button>
+                            <button type="button" class="view-toggle-btn" :class="{ active: viewMode === 'list' }"
+                                @click="setViewMode('list')"
+                                :aria-label="t('pages.dashboard.view.list', 'List view')"
+                                :title="t('pages.dashboard.view.list', 'List view')">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                                </svg>
+                            </button>
+                        </div>
                     </div>
 
                     <div class="toolbar-group">
@@ -217,7 +270,7 @@ export const TEMPLATE = `
                 <p style="font-size:0.875rem;margin-top:8px;color:var(--text-muted)">{{ t('pages.dashboard.empty.library_hint', 'Click "Add" to upload a new sticker.') }}</p>
             </div>
 
-            <div v-else class="inventory-grid">
+            <div v-else class="inventory-grid" :class="{ 'list-mode': viewMode === 'list' }">
                 <div v-for="img in images" :key="img.hash" class="item-slot"
                     :class="{ selected: selectedImages.has(img.hash) }"
                     @click="isBatchMode ? toggleSelection(img) : openPreview(img)">
@@ -242,10 +295,26 @@ export const TEMPLATE = `
                         <img v-else :src="originalDataUrls[img.hash] || imageDataUrls[img.hash]" loading="lazy"
                             :alt="img.desc" class="fade-in">
                     </div>
+                    <span v-if="(img.use_count || 0) > 1" class="item-stack-count">{{ img.use_count }}</span>
 
                     <div class="item-info">
-                        <div class="item-category">{{ getCategoryName(img.category) }}</div>
-                        <div class="item-meta-row">
+                        <div class="list-main">
+                            <div class="item-category">
+                                <span class="cat-dot" :style="catAccent(img.category)"></span>
+                                {{ getCategoryName(img.category) }}
+                            </div>
+                            <div v-if="viewMode === 'list'" class="list-desc">{{ img.desc || t('pages.dashboard.messages.no_description', 'No description') }}</div>
+                            <div v-if="viewMode === 'list' && (img.tags || []).length" class="list-tags">
+                                <span v-for="tag in img.tags.slice(0, 4)" :key="tag" class="tag list-tag">{{ tag }}</span>
+                            </div>
+                        </div>
+                        <div v-if="viewMode === 'list'" class="list-side">
+                            <span class="list-use">{{ t('pages.dashboard.fields.use_count', 'Use Count') }} {{ img.use_count || 0 }}</span>
+                            <span class="list-date">{{ formatDate(img.created_at) }}</span>
+                            <span class="scope-pill" :class="img.scope_mode === 'local' ? 'local' : 'public'">{{
+                                getScopeLabel(img.scope_mode) }}</span>
+                        </div>
+                        <div v-else class="item-meta-row">
                             <span class="scope-pill" :class="img.scope_mode === 'local' ? 'local' : 'public'">{{
                                 getScopeLabel(img.scope_mode) }}</span>
                         </div>
@@ -321,6 +390,15 @@ export const TEMPLATE = `
                 </div>
             </div>
 
+            <div v-if="!pendingLoading && pendingImages.length" class="kbd-hints">
+                <span><kbd>←</kbd><kbd>→</kbd>{{ t('pages.dashboard.kbd.navigate', 'Navigate') }}</span>
+                <span><kbd>A</kbd>{{ t('pages.dashboard.actions.approve', 'Approve') }}</span>
+                <span><kbd>R</kbd>{{ t('pages.dashboard.actions.delete', 'Delete') }}</span>
+                <span><kbd>B</kbd>{{ t('pages.dashboard.actions.blacklist', 'Blacklist') }}</span>
+                <span><kbd>E</kbd>{{ t('pages.dashboard.actions.edit_approve', 'Edit & approve') }}</span>
+                <span><kbd>Esc</kbd>{{ t('pages.dashboard.kbd.clear_focus', 'Clear focus') }}</span>
+            </div>
+
             <div v-if="pendingLoading" class="skeleton-grid">
                 <div v-for="n in pendingPageSize" :key="n" class="skeleton-card">
                     <div class="skeleton-image"></div>
@@ -339,7 +417,8 @@ export const TEMPLATE = `
 
             <div v-else class="pending-grid">
                 <div v-for="item in pendingImages" :key="item.id" class="pending-card"
-                    :class="{ selected: pendingSelectedImages.has(item.id) }"
+                    :class="{ selected: pendingSelectedImages.has(item.id), 'kbd-focused': focusedPendingId === item.id }"
+                    :data-pending-id="item.id"
                     @click="pendingBatchMode ? togglePendingSelection(item) : null">
                     <div v-if="pendingBatchMode" class="batch-indicator">
                         <svg v-if="pendingSelectedImages.has(item.id)" style="width:12px;height:12px" fill="none"
@@ -456,14 +535,22 @@ export const TEMPLATE = `
                         </svg>
                     </button>
 
-                    <img :src="originalDataUrls[previewItem?.hash] || imageDataUrls[previewItem?.hash] || PLACEHOLDER"
-                        :alt="previewItem?.desc">
+                    <img :key="previewItem?.hash" class="fade-in"
+                        :src="originalDataUrls[previewItem?.hash] || imageDataUrls[previewItem?.hash] || PLACEHOLDER"
+                        :alt="previewItem?.desc"
+                        :class="{ zoomable: previewZoom === 1, zoomed: previewZoom > 1, panning: isPanning }"
+                        :style="{ transform: previewTransform }"
+                        @wheel.prevent="onPreviewWheel"
+                        @mousedown.prevent="startPan"
+                        @dblclick.prevent="toggleZoom">
 
                     <button v-if="images.length > 1" @click.stop="nextImage" class="nav-btn right">
                         <svg style="width:24px;height:24px" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
                         </svg>
                     </button>
+
+                    <div v-if="previewZoom > 1" class="zoom-indicator">{{ Math.round(previewZoom * 100) }}%</div>
                 </div>
 
                 <div class="item-stats">
@@ -513,7 +600,7 @@ export const TEMPLATE = `
                     <div class="stat-row">
                         <span class="stat-name">{{ t('pages.dashboard.fields.description', 'Description') }}</span>
                     </div>
-                    <div style="padding:12px;background:rgba(0,0,0,0.3);margin-bottom:12px;border-left:3px solid var(--gold-dim)">
+                    <div class="desc-quote">
                         <p style="margin:0;color:var(--text-main);font-style:italic">
                             {{ previewItem?.desc || t('pages.dashboard.messages.no_description', 'No description') }}
                         </p>
@@ -549,11 +636,11 @@ export const TEMPLATE = `
                 </div>
             </div>
 
-            <div v-else style="padding:24px;width:100%">
+            <div v-else class="modal-pad" style="width:100%">
                 <div style="max-width:500px;margin:0 auto">
                     <div style="margin-bottom:20px">
                         <label
-                            style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.category', 'Category') }}</label>
+                            class="form-label">{{ t('pages.dashboard.fields.category', 'Category') }}</label>
                         <select v-model="editForm.category" class="codex-input">
                             <option v-for="cat in categories" :key="cat.key" :value="cat.key">{{ cat.name }}</option>
                         </select>
@@ -561,7 +648,7 @@ export const TEMPLATE = `
 
                     <div style="margin-bottom:20px">
                         <label
-                            style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.scope', 'Scope') }}</label>
+                            class="form-label">{{ t('pages.dashboard.fields.scope', 'Scope') }}</label>
                         <select v-model="editForm.scope_mode" class="codex-input">
                             <option value="public">public / {{ t('pages.dashboard.scope.public', 'Public') }}</option>
                             <option value="local">local / {{ t('pages.dashboard.scope.local', 'Local only') }}</option>
@@ -571,20 +658,20 @@ export const TEMPLATE = `
 
                     <div style="margin-bottom:20px">
                         <label
-                            style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.description', 'Description') }}</label>
+                            class="form-label">{{ t('pages.dashboard.fields.description', 'Description') }}</label>
                         <textarea v-model="editForm.desc" class="codex-input" rows="3"></textarea>
                     </div>
 
                     <div style="margin-bottom:20px">
                         <label
-                            style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.scenes', 'Scenes') }} ({{ t('pages.dashboard.messages.scene_separator_hint', 'comma separated') }})</label>
+                            class="form-label">{{ t('pages.dashboard.fields.scenes', 'Scenes') }} ({{ t('pages.dashboard.messages.scene_separator_hint', 'comma separated') }})</label>
                         <input v-model="editForm.scene" type="text" class="codex-input"
                             :placeholder="t('pages.dashboard.placeholders.edit_scene', 'Example: celebration, happy')">
                     </div>
 
                     <div style="margin-bottom:20px">
                         <label
-                            style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.tags', 'Tags') }} ({{ t('pages.dashboard.messages.tag_separator_hint', 'comma separated') }})</label>
+                            class="form-label">{{ t('pages.dashboard.fields.tags', 'Tags') }} ({{ t('pages.dashboard.messages.tag_separator_hint', 'comma separated') }})</label>
                         <input v-model="editForm.tags" type="text" class="codex-input"
                             :placeholder="t('pages.dashboard.placeholders.edit_tags', 'Example: cute, funny, rare')">
                     </div>
@@ -637,7 +724,7 @@ export const TEMPLATE = `
 </div>
 
 <div v-if="uploadOpen" class="modal-overlay" @click.self="closeUploadModal">
-    <div class="modal-panel" style="max-width:600px">
+    <div class="modal-panel modal-md">
         <div class="modal-panel-corner-bl"></div>
         <div class="modal-panel-corner-br"></div>
 
@@ -650,7 +737,7 @@ export const TEMPLATE = `
             </button>
         </div>
 
-        <form @submit.prevent="submitUpload" style="padding:24px">
+        <form @submit.prevent="submitUpload" class="modal-pad">
             <div class="upload-area" @click="$refs.fileInput.click()">
                 <input ref="fileInput" type="file" accept="image/*" @change="handleFileSelect" style="display:none">
 
@@ -672,10 +759,10 @@ export const TEMPLATE = `
                 </div>
             </div>
 
-            <div style="margin-top:20px">
+            <div class="mt-20">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
                     <label
-                        style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted)">{{ t('pages.dashboard.fields.category', 'Category') }} *</label>
+                        class="form-label inline">{{ t('pages.dashboard.fields.category', 'Category') }} *</label>
                     <button v-if="uploadFile" type="button" @click.prevent="analyzeImage"
                         :disabled="analyzing || !uploadFile" class="codex-btn"
                         style="font-size:0.7rem;padding:6px 12px;min-height:auto">
@@ -700,7 +787,7 @@ export const TEMPLATE = `
                 </select>
             </div>
 
-            <div v-if="analysisScenes.length" class="analysis-result" style="margin-top:16px">
+            <div v-if="analysisScenes.length" class="analysis-result mt-16">
                 <div class="analysis-result-head">
                     <div class="analysis-result-title">{{ t('pages.dashboard.analysis.scenes_title', 'Detected scenes') }}</div>
                     <div class="analysis-result-subtitle">{{ t('pages.dashboard.analysis.scenes_hint', 'Click a tag to add or remove it from the scene field.') }}</div>
@@ -714,30 +801,29 @@ export const TEMPLATE = `
                 </div>
             </div>
 
-            <div style="margin-top:16px">
+            <div class="mt-16">
                 <label
-                    style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.scenes', 'Scenes') }}</label>
+                    class="form-label">{{ t('pages.dashboard.fields.scenes', 'Scenes') }}</label>
                 <input v-model="uploadForm.scene" type="text" class="codex-input"
                     :placeholder="t('pages.dashboard.placeholders.upload_scene', 'Example: office, chat window, late night')">
-                <p style="margin:8px 0 0;font-size:0.8rem;color:var(--text-muted)">{{ t('pages.dashboard.messages.scene_input_hint', 'You can separate scenes with commas or semicolons.') }}</p>
+                <p class="hint-text" style="margin:8px 0 0">{{ t('pages.dashboard.messages.scene_input_hint', 'You can separate scenes with commas or semicolons.') }}</p>
             </div>
 
-            <div style="margin-top:16px">
+            <div class="mt-16">
                 <label
-                    style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.tags', 'Tags') }}</label>
+                    class="form-label">{{ t('pages.dashboard.fields.tags', 'Tags') }}</label>
                 <input v-model="uploadForm.tags" type="text" class="codex-input"
                     :placeholder="t('pages.dashboard.placeholders.upload_tags', 'Example: cute, funny')">
             </div>
 
-            <div style="margin-top:16px">
+            <div class="mt-16">
                 <label
-                    style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.description', 'Description') }}</label>
+                    class="form-label">{{ t('pages.dashboard.fields.description', 'Description') }}</label>
                 <textarea v-model="uploadForm.desc" class="codex-input" rows="2"
                     :placeholder="t('pages.dashboard.placeholders.upload_desc', 'Describe this sticker...')"></textarea>
             </div>
 
-            <div v-if="uploadError"
-                style="color:#ef4444;font-size:0.875rem;border:1px solid rgba(239,68,68,0.3);background:rgba(239,68,68,0.1);padding:12px;margin-top:16px">
+            <div v-if="uploadError" class="error-banner">
                 {{ uploadError }}
             </div>
 
@@ -753,7 +839,7 @@ export const TEMPLATE = `
 </div>
 
 <div v-if="batchUploadOpen" class="modal-overlay" @click.self="closeBatchUploadModal">
-    <div class="modal-panel" style="max-width:700px">
+    <div class="modal-panel modal-lg">
         <div class="modal-panel-corner-bl"></div>
         <div class="modal-panel-corner-br"></div>
 
@@ -766,7 +852,7 @@ export const TEMPLATE = `
             </button>
         </div>
 
-        <form @submit.prevent="submitBatchUpload" style="padding:24px">
+        <form @submit.prevent="submitBatchUpload" class="modal-pad">
             <div v-if="!batchTaskId">
                 <div class="upload-area batch-upload-area" :class="{ 'is-drag-active': batchDragActive }"
                     @click="triggerBatchFileInput"
@@ -774,7 +860,7 @@ export const TEMPLATE = `
                     @dragover="onBatchDragOver"
                     @dragleave="onBatchDragLeave"
                     @drop="onBatchDrop"
-                    style="min-height:150px">
+                    class="roomy">
                     <input v-if="!batchFolderMode" ref="batchFileInput" type="file" accept="image/*" multiple
                         @change="handleBatchFileSelect" class="native-file-input">
                     <input v-else ref="batchFolderInput" type="file" accept="image/*" webkitdirectory
@@ -826,18 +912,18 @@ export const TEMPLATE = `
                     </div>
                 </div>
 
-                <div style="margin-top:20px">
+                <div class="mt-20">
                     <label
-                        style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.batch.default_category', 'Default Category') }} *</label>
+                        class="form-label">{{ t('pages.dashboard.batch.default_category', 'Default Category') }} *</label>
                     <select v-model="batchUploadForm.emotion" class="codex-input"
                         :disabled="batchUploadForm.autoAnalyze" required>
                         <option value="">{{ t('pages.dashboard.placeholders.select_category', 'Select a category...') }}</option>
                         <option v-for="emo in availableEmotions" :key="emo.key" :value="emo.key">{{ emo.name || emo.key }}</option>
                     </select>
-                    <p style="margin:8px 0 0;font-size:0.8rem;color:var(--text-muted)">{{ t('pages.dashboard.batch.default_category_hint', 'Images will be saved into this category unless auto analyze is enabled.') }}</p>
+                    <p class="hint-text" style="margin:8px 0 0">{{ t('pages.dashboard.batch.default_category_hint', 'Images will be saved into this category unless auto analyze is enabled.') }}</p>
                 </div>
 
-                <div style="margin-top:16px">
+                <div class="mt-16">
                     <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
                         <input type="checkbox" v-model="batchUploadForm.autoAnalyze" class="codex-checkbox"
                             :disabled="batchUploadForm.emotion !== ''">
@@ -851,8 +937,7 @@ export const TEMPLATE = `
                     </p>
                 </div>
 
-                <div v-if="batchUploadError"
-                    style="color:#ef4444;font-size:0.875rem;border:1px solid rgba(239,68,68,0.3);background:rgba(239,68,68,0.1);padding:12px;margin-top:16px">
+                <div v-if="batchUploadError" class="error-banner">
                     {{ batchUploadError }}
                 </div>
 
@@ -866,7 +951,7 @@ export const TEMPLATE = `
                 </div>
             </div>
 
-            <div v-else style="padding:24px">
+            <div v-else class="modal-pad">
                 <div style="text-align:center;margin-bottom:24px">
                     <div v-if="batchTaskStatus === 'processing'" class="batch-spinner">
                         <svg style="width:48px;height:48px;animation:spin 1s linear infinite;color:var(--gold-primary)"
@@ -928,7 +1013,7 @@ export const TEMPLATE = `
 </div>
 
 <div v-if="emotionsOpen" class="modal-overlay" @click.self="closeEmotionsModal">
-    <div class="modal-panel" style="max-width:700px">
+    <div class="modal-panel modal-lg">
         <div class="modal-panel-corner-bl"></div>
         <div class="modal-panel-corner-br"></div>
 
@@ -941,7 +1026,7 @@ export const TEMPLATE = `
             </button>
         </div>
 
-        <div style="padding:24px">
+        <div class="modal-pad">
             <div style="background:var(--bg-main);padding:16px;margin-bottom:20px;border:1px solid var(--gold-dark)">
                 <h3 style="margin:0 0 16px 0;font-size:0.9rem;color:var(--gold-primary);font-family:'Cinzel',serif">{{ t('pages.dashboard.categories.add_new', 'Add Category') }}</h3>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:12px">
@@ -980,7 +1065,7 @@ export const TEMPLATE = `
 </div>
 
 <div v-if="batchMoveOpen" class="modal-overlay" @click.self="closeBatchMoveModal">
-    <div class="modal-panel" style="max-width:400px">
+    <div class="modal-panel modal-narrow">
         <div class="modal-panel-corner-bl"></div>
         <div class="modal-panel-corner-br"></div>
 
@@ -988,11 +1073,11 @@ export const TEMPLATE = `
             <h2>{{ t('pages.dashboard.modal.batch_move', 'Batch Move') }}</h2>
         </div>
 
-        <div style="padding:24px">
+        <div class="modal-pad">
             <p style="margin:0 0 16px 0;color:var(--text-muted)">{{ t('pages.dashboard.batch.selected_images', 'Selected {count} image(s)').replace('{count}', selectedImages.size) }}</p>
 
             <label
-                style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.target_category', 'Target Category') }}</label>
+                class="form-label">{{ t('pages.dashboard.fields.target_category', 'Target Category') }}</label>
             <select v-model="batchTargetCategory" class="codex-input" style="margin-bottom:20px">
                 <option value="">{{ t('pages.dashboard.placeholders.select', 'Select...') }}</option>
                 <option v-for="cat in categories" :key="cat.key" :value="cat.key">{{ cat.name }}</option>
@@ -1008,7 +1093,7 @@ export const TEMPLATE = `
 </div>
 
 <div v-if="batchScopeOpen" class="modal-overlay" @click.self="closeBatchScopeModal">
-    <div class="modal-panel" style="max-width:400px">
+    <div class="modal-panel modal-narrow">
         <div class="modal-panel-corner-bl"></div>
         <div class="modal-panel-corner-br"></div>
 
@@ -1016,11 +1101,11 @@ export const TEMPLATE = `
             <h2>{{ t('pages.dashboard.modal.batch_scope', 'Batch Scope') }}</h2>
         </div>
 
-        <div style="padding:24px">
+        <div class="modal-pad">
             <p style="margin:0 0 16px 0;color:var(--text-muted)">{{ t('pages.dashboard.batch.selected_images', 'Selected {count} image(s)').replace('{count}', selectedImages.size) }}</p>
 
             <label
-                style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:8px">{{ t('pages.dashboard.fields.target_scope', 'Target Scope') }}</label>
+                class="form-label">{{ t('pages.dashboard.fields.target_scope', 'Target Scope') }}</label>
             <select v-model="batchScopeMode" class="codex-input" style="margin-bottom:20px">
                 <option value="public">public / {{ t('pages.dashboard.scope.public', 'Public') }}</option>
                 <option value="local">local / {{ t('pages.dashboard.scope.local', 'Local only') }}</option>
@@ -1060,16 +1145,25 @@ export const TEMPLATE = `
     </button>
 </div>
 
-<div v-if="toastOpen" class="toast-notification" @click="toastOpen = false" style="white-space:pre-line">
-    {{ toastMessage }}
+<div v-if="toastOpen" class="toast-notification" :class="toastType" @click="toastOpen = false" style="white-space:pre-line">
+    <svg v-if="toastType === 'success'" class="toast-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <svg v-else-if="toastType === 'error'" class="toast-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+    </svg>
+    <svg v-else class="toast-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+    <span>{{ toastMessage }}</span>
 </div>
 
 <div v-if="confirmOpen" class="modal-overlay" @click.self="onConfirmNo">
-    <div class="modal-panel" style="max-width:400px">
+    <div class="modal-panel modal-narrow">
         <div class="modal-header">
             <h2>{{ t('pages.dashboard.modal.confirm', 'Confirm Action') }}</h2>
         </div>
-        <div style="padding:24px">
+        <div class="modal-pad">
             <p style="margin:0 0 24px;color:var(--text-main);font-size:1rem;white-space:pre-line">{{ confirmMessage }}</p>
             <div style="display:flex;gap:12px">
                 <button @click="onConfirmNo" class="codex-btn" style="flex:1">{{ t('pages.dashboard.actions.cancel', 'Cancel') }}</button>
@@ -1096,7 +1190,7 @@ export const TEMPLATE = `
         </div>
 
         <div class="modal-content">
-            <div style="padding:24px;width:100%">
+            <div class="modal-pad" style="width:100%">
                 <div style="max-width:520px;margin:0 auto">
                     <div class="pending-edit-preview"
                         style="display:flex;gap:16px;align-items:center;margin-bottom:20px;padding:12px;background:rgba(0,0,0,0.25);border-radius:6px">
@@ -1118,7 +1212,7 @@ export const TEMPLATE = `
 
                     <div style="margin-bottom:16px">
                         <label
-                            style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:6px">
+                            class="form-label sm">
                             {{ t('pages.dashboard.fields.category', 'Category') }}
                         </label>
                         <select v-model="pendingEditForm.category" class="codex-input">
@@ -1128,7 +1222,7 @@ export const TEMPLATE = `
 
                     <div style="margin-bottom:16px">
                         <label
-                            style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:6px">
+                            class="form-label sm">
                             {{ t('pages.dashboard.fields.scope', 'Scope') }}
                         </label>
                         <select v-model="pendingEditForm.scope_mode" class="codex-input">
@@ -1139,7 +1233,7 @@ export const TEMPLATE = `
 
                     <div style="margin-bottom:16px">
                         <label
-                            style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:6px">
+                            class="form-label sm">
                             {{ t('pages.dashboard.fields.description', 'Description') }}
                         </label>
                         <textarea v-model="pendingEditForm.desc" class="codex-input" rows="3"></textarea>
@@ -1147,7 +1241,7 @@ export const TEMPLATE = `
 
                     <div style="margin-bottom:16px">
                         <label
-                            style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:6px">
+                            class="form-label sm">
                             {{ t('pages.dashboard.fields.tags', 'Tags') }}
                             ({{ t('pages.dashboard.messages.tag_separator_hint', 'comma separated') }})
                         </label>
@@ -1156,7 +1250,7 @@ export const TEMPLATE = `
 
                     <div style="margin-bottom:8px">
                         <label
-                            style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--text-muted);display:block;margin-bottom:6px">
+                            class="form-label sm">
                             {{ t('pages.dashboard.fields.scenes', 'Scenes') }}
                             ({{ t('pages.dashboard.messages.scene_separator_hint', 'comma separated') }})
                         </label>
@@ -1181,11 +1275,11 @@ export const TEMPLATE = `
 </div>
 
 <div v-if="promptOpen" class="modal-overlay" @click.self="onPromptCancel">
-    <div class="modal-panel" style="max-width:420px">
+    <div class="modal-panel modal-narrow">
         <div class="modal-header">
             <h2>{{ t('pages.dashboard.modal.input', 'Input') }}</h2>
         </div>
-        <div style="padding:24px">
+        <div class="modal-pad">
             <p style="margin:0 0 16px;color:var(--text-main);font-size:1rem">{{ promptMessage }}</p>
             <input v-model="promptValue" type="text" class="codex-input" @keyup.enter="onPromptOk">
             <div style="display:flex;gap:12px;margin-top:20px">

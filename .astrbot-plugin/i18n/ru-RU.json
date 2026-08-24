@@ -213,6 +213,16 @@
             "alerts": {
                 "pending_saved": "Изменения на модерации сохранены."
             },
+            "themes": {
+                "title": "Тема",
+                "auto": "Как у хоста",
+                "dark": "Тёмное золото",
+                "light": "Светлая",
+                "minecraft": "Minecraft",
+                "fallout": "Fallout 4",
+                "group_original": "Оригинал",
+                "group_game": "Игровой инвентарь"
+            },
             "fields": {
                 "category": "Категория",
                 "scope": "Область действия",

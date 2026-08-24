@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.4] - 2026-08-24
+
+### added
+- WebUI 游戏背包主题：我的世界（箱子物品栏）与辐射 4（Pip-Boy 仓库）；主题选择器保留跟随宿主 / 暗色鎏金 / 亮色
+- WebUI 图片展示框按窗口宽度自适应（`--slot-size`），库网格、游戏槽位、详情预览与审核卡片随视口缩放
+- WebUI 网格 / 列表视图切换、预览缩放拖拽、分类 accent 色点
+- tests/web：Dashboard 预览服务器与冒烟测试（mock bridge、静态资源、审核 / 上传 / 删除流）
+
+### changed
+- WebUI 改用 Vue 生产构建，并补 favicon（`pages/dashboard/logo.png`）
+
+### fixed
+- PR #100：预览弹窗未导出 `formatBytes` / `formatAddMethod`，新入库图片点开详情崩溃
+
 ## [2.8.3] - 2026-08-20
 
 ### added
